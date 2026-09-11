@@ -1,0 +1,61 @@
+groups:
+  - name: "BRL Pricing Group"
+   # group_key: "919594937777-1568990780@g.us"
+    group_key: "120363428995537219@g.us"
+
+
+coordinator:
+  name: "BRL Coordinator"
+  email: "admin@bestroadways.com"
+
+tat:
+  amber_minutes: 60
+  red_minutes: 120
+  repeat_minutes: 60
+  max_reminders: 5
+  scheduler_tick_seconds: 60
+
+quiet_hours:
+  start: "21:00"
+  end: "08:00"
+
+requesters:
+  Shashikant: "Shashikant"
+  "Prashant Pawar (KAM)": "Prashant Pawar"
+
+pricing_team:
+  919900000001:
+    name: "Kamlesh Yogi"
+    email: "kamlesh@bestroadways.com"
+    aliases: ["Kamlesh Yogi", "Kamlesh", "kamlesh"]
+    assign_order: 1
+
+  919900000002:
+    name: "Giriraj Rathod"
+    email: "giriraj@bestroadways.com"
+    aliases: ["Giriraj Rathod", "Giriraj", "giriraj"]
+    assign_order: 2
+
+  919900000003:
+    name: "Rakesh Kumar"
+    email: "rakesh@bestroadways.com"
+    aliases: ["Rakesh Kumar", "Rakesh"]
+    assign_order: 3
+
+  919900000004:
+    name: "Sunil Sharma"
+    email: "sunil@bestroadways.com"
+    aliases: ["Sunil Sharma", "Sunil"]
+    assign_order: 4
+
+  919900000005:
+    name: "Deepak Patil"
+    email: "deepak@bestroadways.com"
+    aliases: ["Deepak Patil", "Deepak"]
+    assign_order: 5
+
+  919900000006:
+    name: "Anil Verma"
+    email: "anil@bestroadways.com"
+    aliases: ["Anil Verma", "Anil"]
+    assign_order: 6

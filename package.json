@@ -1,0 +1,17 @@
+{
+  "name": "brl-tat-portal",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -k -n SERVER,CLIENT -c yellow,cyan \"npm:start:server\" \"npm:start:client\"",
+    "install:all": "npm --prefix server install && npm --prefix client install",
+    "start:client": "npm --prefix client run dev",
+    "start:server": "npm --prefix server run start:dev"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "http-proxy-middleware": "^4.2.0"
+  }
+}
