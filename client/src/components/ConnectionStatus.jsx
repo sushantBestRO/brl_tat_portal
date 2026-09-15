@@ -19,7 +19,7 @@ export default function ConnectionStatus() {
     };
 
     check();
-    const interval = setInterval(check, 30000);
+    const interval = setInterval(check, 15000);
     return () => clearInterval(interval);
   }, []);
 

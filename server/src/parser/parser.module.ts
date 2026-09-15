@@ -1,8 +1,9 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ClassificationPhrase } from '../entities/classification-phrase.entity';
 import { ParserService } from './parser.service';
 
+Global();
 @Module({
   imports: [TypeOrmModule.forFeature([ClassificationPhrase])],
   providers: [ParserService],

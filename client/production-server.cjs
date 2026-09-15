@@ -30,6 +30,6 @@ app.use((req, res, next) => {
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Production frontend running on http://localhost:${PORT}`);
-  console.log(`Production frontend listening on http://192.168.0.121:${PORT}`);
+  console.log(`Production frontend listening on http://192.168.0.120:${PORT}`);
 
 });

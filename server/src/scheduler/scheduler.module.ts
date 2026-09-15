@@ -7,14 +7,17 @@ import { ChatMessage } from 'src/entities';
 import { IngestModule } from 'src/ingest/ingest.module';
 import { AppConfigModule } from '../config/app-config.module';
 import { SchedulerStatusController } from './scheduler-status.controller';
+import { OcrService } from 'src/services/ocr.service';
+import { ParserModule } from 'src/parser/parser.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Inquiry, Event, ChatMessage]),
     IngestModule,
     AppConfigModule,
+    ParserModule,
   ],
-  controllers:[SchedulerStatusController],
-  providers: [SchedulerService],
+  controllers: [SchedulerStatusController],
+  providers: [SchedulerService, OcrService],
 })
 export class SchedulerModule {}

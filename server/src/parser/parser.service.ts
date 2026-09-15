@@ -1620,6 +1620,11 @@ export class ParserService {
   // }
 
   parseRateReply(body: string): ParsedRateReply | null {
+    // ─── FIX: "Market Rate" posts are not rate replies ───
+    if (/^\s*market\s*rate\b/i.test(body.trim())) {
+      return null;
+    }
+
     const cleaned = body.replace(PHONE_RE, ' ').replace(VEHICLE_RE, ' ');
 
     const wts = this.weightsOf(body);

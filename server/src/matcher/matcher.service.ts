@@ -120,6 +120,29 @@ export class MatcherService {
     const body = msg.body || '';
 
     // ─── FIRST: Check whether this is an inquiry/request ───
+
+    // ─── Image inquiry placeholder → create inquiry immediately ───
+    if (body === '[IMAGE INQUIRY]') {
+      const inq = this.inquiryRepo.create({
+        groupKey: msg.groupKey,
+        messageId: msg.id,
+        requesterKey: msg.senderKey,
+        requesterName: this.config.requesterName(msg.senderKey, msg.senderName),
+        postedAt: msg.postedAt,
+        lane: '[Image Inquiry - check WhatsApp]',
+        spec: '',
+        vehicleType: '',
+        rawBody: '[IMAGE INQUIRY - OCR pending]',
+        status: 'OPEN',
+        assignedToKey: null,
+        assignedToName: null,
+      });
+      await this.inquiryRepo.save(inq);
+      msg.inquiryId = inq.id;
+      this.logger.log(`[Matcher] Image inquiry created → #${inq.id}`);
+      return 'INQUIRY';
+    }
+
     // A genuine inquiry must take priority even if the message
     // also contains words such as RATE / IMPORT RATE / MARKET RATE.
     const parsedInquiry = this.parser.parseInquiry(body);
@@ -359,6 +382,8 @@ export class MatcherService {
   }
 
   // ─── Handle message from a pricing team member ───
+
+  // ─── Handle message from a pricing team member ───
   async handlePricerMessage(
     msg: ChatMessage,
     preParsedReply?: any,
@@ -381,14 +406,12 @@ export class MatcherService {
       msg.postedAt,
       MATCH_WINDOW_DAYS,
     );
-    if (!cands.length) return 'RATE_REPLY'; // rate but nothing to match → keep for audit
+    if (!cands.length) return 'RATE_REPLY';
 
     let best: Inquiry | null = null;
     let basis: string | null = null;
 
     // ─── Pass 0: WhatsApp "Reply" feature (ground truth) ───
-    // If the pricer used WhatsApp's reply button, we know exactly which
-    // message they replied to. This is the most reliable match.
     if (msg.quotedWaId) {
       const quoted = await this.messageRepo.findOne({
         where: { waMessageId: msg.quotedWaId },
@@ -405,8 +428,6 @@ export class MatcherService {
     }
 
     // ─── Pass 0b: Quoted text match ───
-    // If we have the text of the message being replied to (but not the ID),
-    // match it against candidate inquiries by token similarity
     if (!best && msg.quotedText) {
       const qtoks = this.parser.tokensOf(msg.quotedText);
       let b: Inquiry | null = null;
@@ -436,7 +457,6 @@ export class MatcherService {
           reply.tokens,
           this.parser.tokensOf(inq.rawBody),
         );
-        // If both have matching weights, add 0.5 to the score
         const inqWeights = new Set(
           (inq.weights || '').split(',').filter(Boolean),
         );
@@ -459,89 +479,15 @@ export class MatcherService {
       }
     }
 
-    // ─── Pass 2: FIFO fallback (oldest open inquiry within 24h) ───
-    // if (!best) {
-    //   const cutoff = new Date(
-    //     msg.postedAt.getTime() - SEQUENCE_WINDOW_HOURS * 3600000,
-    //   );
-    //   const near = cands.filter((i) => new Date(i.postedAt) >= cutoff);
-    //   if (near.length) {
-    //     best = near[0]; // oldest one
-    //     basis = 'sequence';
-    //   }
-    // }
-
-    // Changed 8/9/26
-    // ─── Pass 2: FIFO fallback (oldest open inquiry within 24h) ───
-    // Only auto-attach if there's exactly ONE candidate — no ambiguity.
-    // If multiple open inquiries exist and content didn't match any of them,
-    // don't guess: log it so the coordinator can manually assign the rate.
-    // ─── Pass 2: FIFO fallback (smarter matching) ───
+    // ─── Pass 2: DISABLED — No more guessing ───
     if (!best) {
-      const cutoff = new Date(
-        msg.postedAt.getTime() - SEQUENCE_WINDOW_HOURS * 3600000,
+      this.logger.log(
+        `[Matcher] No confident match found for rate ${reply.rates.join(', ')} — leaving unmatched (no sequence match)`,
       );
-      const near = cands.filter((i) => new Date(i.postedAt) >= cutoff);
-
-      if (near.length === 1) {
-        // Only one open inquiry → match it
-        best = near[0];
-        basis = 'sequence';
-      } else if (near.length > 1) {
-        // Multiple open inquiries → try size-based matching first
-        // If the rate reply mentions a container size, match to inquiry with same size
-        const replyText = msg.body || '';
-        const replySizes =
-          replyText.match(/\d+\s*(?:x\s*\d+'?|'|ft|feet)/gi) || [];
-
-        if (replySizes.length) {
-          for (const inq of near) {
-            const inqType = (inq.vehicleType || '').toLowerCase();
-            for (const rs of replySizes) {
-              const rsClean = rs.replace(/\s+/g, '').toLowerCase();
-              if (
-                inqType.includes(rsClean) ||
-                (inq.vehicleType || '').toLowerCase().includes(rsClean)
-              ) {
-                best = inq;
-                basis = 'size_match';
-                break;
-              }
-            }
-            if (best) break;
-          }
-        }
-
-        // If size matching failed, fall back to closest in time
-        if (!best) {
-          let closest: Inquiry | null = null;
-          let minGap = Infinity;
-          for (const inq of near) {
-            const gap =
-              msg.postedAt.getTime() - new Date(inq.postedAt).getTime();
-            if (gap > 0 && gap < minGap) {
-              minGap = gap;
-              closest = inq;
-            }
-          }
-          if (closest) {
-            best = closest;
-            basis = 'sequence';
-          }
-        }
-      }
+      return 'RATE_REPLY';
     }
 
     if (!best || !basis) return 'RATE_REPLY';
-
-    // // ─── We have a match! Is it already quoted? ───
-    // if (best.status === 'QUOTED' && best.quotedAt) {
-    //   // Already quoted → this is a RATE CHANGE
-    //   await this.markRateChanged(best, msg, reply.rates, basis);
-    // } else {
-    //   // Not quoted yet → this is the first quote
-    //   await this.markQuoted(best, msg, reply.rates, basis);
-    // }
 
     if (best.status === 'QUOTED' && best.quotedAt) {
       await this.markRateChanged(
@@ -557,6 +503,223 @@ export class MatcherService {
 
     return 'RATE_REPLY';
   }
+
+  // async handlePricerMessage(
+  //   msg: ChatMessage,
+  //   preParsedReply?: any,
+  // ): Promise<string> {
+  //   const reply = preParsedReply || this.parser.parseRateReply(msg.body || '');
+
+  //   if (!reply) {
+  //     this.logger.warn(
+  //       `[Matcher] Pricer message has no rate values → classified as OTHER. Body: "${(msg.body || '').slice(0, 120)}"`,
+  //     );
+  //     return 'OTHER';
+  //   }
+  //   this.logger.log(
+  //     `[Matcher] Pricer message parsed → rates: ${reply.rates.join(', ')}. Looking for matching inquiry...`,
+  //   );
+
+  //   // Get all open inquiries in this group within the match window
+  //   const cands = await this.getOpenInquiries(
+  //     msg.groupKey,
+  //     msg.postedAt,
+  //     MATCH_WINDOW_DAYS,
+  //   );
+  //   if (!cands.length) return 'RATE_REPLY'; // rate but nothing to match → keep for audit
+
+  //   let best: Inquiry | null = null;
+  //   let basis: string | null = null;
+
+  //   // ─── Pass 0: WhatsApp "Reply" feature (ground truth) ───
+  //   // If the pricer used WhatsApp's reply button, we know exactly which
+  //   // message they replied to. This is the most reliable match.
+  //   if (msg.quotedWaId) {
+  //     const quoted = await this.messageRepo.findOne({
+  //       where: { waMessageId: msg.quotedWaId },
+  //     });
+  //     if (quoted?.inquiryId) {
+  //       const inq = await this.inquiryRepo.findOne({
+  //         where: { id: quoted.inquiryId },
+  //       });
+  //       if (inq && inq.status === 'OPEN' && inq.groupKey === msg.groupKey) {
+  //         best = inq;
+  //         basis = 'whatsapp_reply';
+  //       }
+  //     }
+  //   }
+
+  //   // ─── Pass 0b: Quoted text match ───
+  //   // If we have the text of the message being replied to (but not the ID),
+  //   // match it against candidate inquiries by token similarity
+  //   if (!best && msg.quotedText) {
+  //     const qtoks = this.parser.tokensOf(msg.quotedText);
+  //     let b: Inquiry | null = null;
+  //     let bScore = 0;
+  //     for (const inq of cands) {
+  //       const score = this.parser.jaccard(
+  //         qtoks,
+  //         this.parser.tokensOf(inq.rawBody),
+  //       );
+  //       if (score > bScore) {
+  //         b = inq;
+  //         bScore = score;
+  //       }
+  //     }
+  //     if (b && bScore >= 0.35) {
+  //       best = b;
+  //       basis = 'whatsapp_reply_text';
+  //     }
+  //   }
+
+  //   // ─── Pass 1: Content similarity (token overlap + weight match) ───
+  //   if (!best) {
+  //     let b: Inquiry | null = null;
+  //     let bScore = 0;
+  //     for (const inq of cands) {
+  //       let score = this.parser.jaccard(
+  //         reply.tokens,
+  //         this.parser.tokensOf(inq.rawBody),
+  //       );
+  //       // If both have matching weights, add 0.5 to the score
+  //       const inqWeights = new Set(
+  //         (inq.weights || '').split(',').filter(Boolean),
+  //       );
+  //       if (inqWeights.size && reply.weights.size) {
+  //         for (const w of reply.weights) {
+  //           if (inqWeights.has(w)) {
+  //             score += 0.5;
+  //             break;
+  //           }
+  //         }
+  //       }
+  //       if (score > bScore) {
+  //         b = inq;
+  //         bScore = score;
+  //       }
+  //     }
+  //     if (b && bScore >= QUOTED_MATCH) {
+  //       best = b;
+  //       basis = 'quoted';
+  //     }
+  //   }
+
+  //   // ─── Pass 2: FIFO fallback (oldest open inquiry within 24h) ───
+  //   // if (!best) {
+  //   //   const cutoff = new Date(
+  //   //     msg.postedAt.getTime() - SEQUENCE_WINDOW_HOURS * 3600000,
+  //   //   );
+  //   //   const near = cands.filter((i) => new Date(i.postedAt) >= cutoff);
+  //   //   if (near.length) {
+  //   //     best = near[0]; // oldest one
+  //   //     basis = 'sequence';
+  //   //   }
+  //   // }
+
+  //   // ─── Pass 2: DISABLED — No more guessing ───
+  //   // If Pass 0 (WhatsApp reply), Pass 0b (quoted text), and Pass 1 (content similarity)
+  //   // all failed to find a match, we do NOT guess.
+  //   // The rate is left unmatched so the coordinator can assign it manually.
+  //   if (!best) {
+  //     this.logger.log(
+  //       `[Matcher] No confident match found for rate ${reply.rates.join(', ')} — leaving unmatched (no sequence match)`,
+  //     );
+  //     return 'RATE_REPLY';
+  //   }
+
+  //   // Changed 8/9/26
+  //   // ─── Pass 2: FIFO fallback (oldest open inquiry within 24h) ───
+  //   // Only auto-attach if there's exactly ONE candidate — no ambiguity.
+  //   // If multiple open inquiries exist and content didn't match any of them,
+  //   // don't guess: log it so the coordinator can manually assign the rate.
+  //   // ─── Pass 2: FIFO fallback (smarter matching) ───
+  //   if (!best) {
+  //     const cutoff = new Date(
+  //       msg.postedAt.getTime() - SEQUENCE_WINDOW_HOURS * 3600000,
+  //     );
+  //     const near = cands.filter((i) => new Date(i.postedAt) >= cutoff);
+
+  //     if (near.length === 1) {
+  //       // Only one open inquiry → match it
+  //       best = near[0];
+  //       basis = 'sequence';
+  //     } else if (near.length > 1) {
+  //       // Multiple open inquiries → try size-based matching first
+  //       // If the rate reply mentions a container size, match to inquiry with same size
+  //       const replyText = msg.body || '';
+  //       const replySizes =
+  //         replyText.match(/\d+\s*(?:x\s*\d+'?|'|ft|feet)/gi) || [];
+
+  //       if (replySizes.length) {
+  //         for (const inq of near) {
+  //           const inqType = (inq.vehicleType || '').toLowerCase();
+  //           for (const rs of replySizes) {
+  //             const rsClean = rs.replace(/\s+/g, '').toLowerCase();
+  //             if (
+  //               inqType.includes(rsClean) ||
+  //               (inq.vehicleType || '').toLowerCase().includes(rsClean)
+  //             ) {
+  //               best = inq;
+  //               basis = 'size_match';
+  //               break;
+  //             }
+  //           }
+  //           if (best) break;
+  //         }
+  //       }
+
+  //       // If size matching failed, fall back to closest in time
+  //       if (!best) {
+  //         // let closest: Inquiry | null = null;
+  //         // let minGap = Infinity;
+  //         // for (const inq of near) {
+  //         //   const gap =
+  //         //     msg.postedAt.getTime() - new Date(inq.postedAt).getTime();
+  //         //   if (gap > 0 && gap < minGap) {
+  //         //     minGap = gap;
+  //         //     closest = inq;
+  //         //   }
+  //         // }
+  //         // if (closest) {
+  //         //   best = closest;
+  //         //   basis = 'sequence';
+  //         // }
+  //         // ─── DISABLED: Sequence match causes wrong matches when pricers
+  //         // reply to image/photo inquiries that the system can't parse.
+  //         // Instead of guessing, leave the rate unmatched. ───
+  //         this.logger.log(
+  //           `[Matcher] No confident match found for rate ${reply.rates.join(', ')} — likely replying to an image inquiry. Leaving unmatched.`,
+  //         );
+  //         return 'RATE_REPLY'; // Rate exists but no inquiry matched
+  //       }
+  //     }
+  //   }
+
+  //   if (!best || !basis) return 'RATE_REPLY';
+
+  //  // if (best.status === 'QUOTED' && best.quotedAt) {
+  //   // // // ─── We have a match! Is it already quoted? ───
+  //      // Already quoted → this is a RATE CHANGE
+  //   //   await this.markRateChanged(best, msg, reply.rates, basis);
+  //   // } else {
+  //   //   // Not quoted yet → this is the first quote
+  //   //   await this.markQuoted(best, msg, reply.rates, basis);
+  //   // }
+
+  //   if (best.status === 'QUOTED' && best.quotedAt) {
+  //     await this.markRateChanged(
+  //       best,
+  //       msg,
+  //       reply.rates,
+  //       reply.sizeRates,
+  //       basis,
+  //     );
+  //   } else {
+  //     await this.markQuoted(best, msg, reply.rates, reply.sizeRates, basis);
+  //   }
+
+  //   return 'RATE_REPLY';
+  // }
 
   // ─── Mark an inquiry as quoted (rate given) ───
   // private async markQuoted(
