@@ -638,9 +638,22 @@ export class SchedulerService {
           m.message?.file?.url ||
           null;
 
-        // ─── DEBUG: Log the full message structure for image messages ───
-        // ─── DEBUG: Log the full message structure for image messages ───
-        if (hasImage) {
+        // // ─── DEBUG: Log the full message structure for image messages ───
+        // // ─── DEBUG: Log the full message structure for image messages ───
+        // if (hasImage) {
+        //   this.logger.log(
+        //     `[Maytapi Poll] IMAGE DEBUG message: ${JSON.stringify(m.message).slice(0, 1000)}`,
+        //   );
+        //   this.logger.log(
+        //     `[Maytapi Poll] IMAGE DEBUG full: ${JSON.stringify(m).slice(0, 1000)}`,
+        //   );
+        // }
+
+        // ─── Verbose payload dump — only when explicitly enabled ───
+        // Full message/user payloads include phone-derived IDs, names, and
+        // image URLs. Fine for active debugging, not something that should
+        // sit in production log files by default.
+        if (hasImage && process.env.DEBUG_VERBOSE_LOGGING === 'true') {
           this.logger.log(
             `[Maytapi Poll] IMAGE DEBUG message: ${JSON.stringify(m.message).slice(0, 1000)}`,
           );

@@ -116,6 +116,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
 import { ParserService } from './parser/parser.service';
 import { SchedulerModule } from './scheduler/scheduler.module';
 import { ImportHistoryModule } from './import-history/import-history.module';
+import { JwtAuthGuard } from './auth/jwt-auth.guard';
 
 @Module({
   imports: [
@@ -163,6 +164,8 @@ import { ImportHistoryModule } from './import-history/import-history.module';
     SchedulerModule,
     ImportHistoryModule,
   ],
+  // newl added for security
+  providers: [JwtAuthGuard],
 })
 export class AppModule implements OnModuleInit {
   constructor(

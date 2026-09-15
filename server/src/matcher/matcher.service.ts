@@ -7,6 +7,7 @@ import { Event } from '../entities/event.entity';
 import { AppConfigService } from '../config/app-config.service';
 import { ParserService } from '../parser/parser.service';
 import { NotifyService } from 'src/notify/notify.service';
+import { Like } from 'typeorm';
 
 // ─── Matching thresholds (same as original Python project) ───
 const REPOST_SIM = 0.65; // If similarity > 0.65, it's a repost (→ chase)
@@ -410,12 +411,25 @@ export class MatcherService {
 
     let best: Inquiry | null = null;
     let basis: string | null = null;
-
     // ─── Pass 0: WhatsApp "Reply" feature (ground truth) ───
     if (msg.quotedWaId) {
-      const quoted = await this.messageRepo.findOne({
+      // Try exact match first
+      let quoted = await this.messageRepo.findOne({
         where: { waMessageId: msg.quotedWaId },
       });
+
+      // ─── FIX: Maytapi quoted IDs are SHORT (e.g. 3EB0D662...) but stored
+      // waMessageIds are FULL (false_group_id_SHORT_sender@c.us).
+      // Use partial match if exact match fails. ───
+      if (!quoted) {
+        quoted = await this.messageRepo
+          .createQueryBuilder('msg')
+          .where('msg.wa_message_id LIKE :pattern', {
+            pattern: `%${msg.quotedWaId}%`,
+          })
+          .getOne();
+      }
+
       if (quoted?.inquiryId) {
         const inq = await this.inquiryRepo.findOne({
           where: { id: quoted.inquiryId },

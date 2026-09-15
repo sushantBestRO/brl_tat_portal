@@ -1620,9 +1620,14 @@ export class ParserService {
   // }
 
   parseRateReply(body: string): ParsedRateReply | null {
-    // ─── FIX: "Market Rate" posts are not rate replies ───
+    // ─── FIX: Only reject "Market Rate" messages that are rate CARDS ───
+    // (they contain a lane + spec). A short rate reply like
+    // "MARKET RATE 115000/-" or "Market Rate-75000/-" is still a valid rate.
     if (/^\s*market\s*rate\b/i.test(body.trim())) {
-      return null;
+      if (LANE_RE.test(body) && SPEC_RE.test(body)) {
+        return null; // It's a rate card → reject
+      }
+      // No lane + spec → it's a rate reply → continue processing
     }
 
     const cleaned = body.replace(PHONE_RE, ' ').replace(VEHICLE_RE, ' ');

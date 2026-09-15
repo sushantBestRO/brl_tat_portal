@@ -163,6 +163,8 @@ export class OcrService {
         vehicleType = vehicleType
           .replace(/[@©®]/g, '')
           .replace(/\bFTL\b/gi, '')
+          .replace(/°/g, "'") // ← ADD: degree symbol → apostrophe
+          .replace(/×/g, 'x') // ← ADD: × → x
           .replace(/\s+/g, ' ')
           .trim();
         vehicleType = vehicleType.replace(/\s+[a-z]$/, '').trim();
@@ -220,6 +222,11 @@ export class OcrService {
     }
 
     if (!fromCity && !toCity) return null;
+
+    // ─── Guard: if destination is empty or too short, flag for manual review ───
+    if (!toCity || toCity.trim().length < 3) {
+      toCity = '[CHECK WHATSAPP - OCR incomplete]';
+    }
 
     const lane =
       [fromCity, fromPin].filter(Boolean).join(' ') +

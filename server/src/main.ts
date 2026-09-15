@@ -3,12 +3,21 @@ import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module';
 import * as bodyParser from 'body-parser';
+import { JwtAuthGuard } from './auth/jwt-auth.guard';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { cors: true });
 
   // Get the ConfigService to read env vars
   const config = app.get(ConfigService);
+
+  // ─── Require a valid JWT on every route by default ───
+  // Without this, every controller in the app is reachable by anyone
+  // with network access — no login required. JwtAuthGuard checks for
+  // @Public() first, so /auth/login and the webhook endpoints still work.
+  // We fetch JwtAuthGuard via app.get() (instead of `new JwtAuthGuard()`)
+  // so Nest's DI container injects the Reflector it depends on.
+  app.useGlobalGuards(app.get(JwtAuthGuard));
 
   // Enable CORS for the React frontend
   app.enableCors({
