@@ -98,26 +98,27 @@ export class AppConfigService implements OnModuleInit {
 
   // ─── Load pricing team from database (seed from config.yaml on first run) ───
   async reloadPricingTeam() {
-    let rows = await this.teamRepo.find();
+    // let rows = await this.teamRepo.find();
+    const rows = await this.teamRepo.find();
 
-    // FIRST RUN: table is empty → seed from config.yaml
-    if (rows.length === 0) {
-      for (const [phone, entry] of Object.entries(
-        this.CONFIG.pricing_team || {},
-      )) {
-        await this.teamRepo.save(
-          this.teamRepo.create({
-            phone,
-            name: (entry as any).name || phone,
-            email: (entry as any).email || '',
-            aliases: ((entry as any).aliases || []).join(','),
-            assignOrder: (entry as any).assign_order || 99,
-            active: true,
-          }),
-        );
-      }
-      rows = await this.teamRepo.find();
-    }
+    // // FIRST RUN: table is empty → seed from config.yaml
+    // if (rows.length === 0) {
+    //   for (const [phone, entry] of Object.entries(
+    //     this.CONFIG.pricing_team || {},
+    //   )) {
+    //     await this.teamRepo.save(
+    //       this.teamRepo.create({
+    //         phone,
+    //         name: (entry as any).name || phone,
+    //         email: (entry as any).email || '',
+    //         aliases: ((entry as any).aliases || []).join(','),
+    //         assignOrder: (entry as any).assign_order || 99,
+    //         active: true,
+    //       }),
+    //     );
+    //   }
+    //   rows = await this.teamRepo.find();
+    // }
 
     // Rebuild the in-memory dictionaries
     this.PRICING_TEAM = {};

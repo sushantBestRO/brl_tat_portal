@@ -9,6 +9,7 @@ import { AppConfigModule } from '../config/app-config.module';
 import { SchedulerStatusController } from './scheduler-status.controller';
 import { OcrService } from 'src/services/ocr.service';
 import { ParserModule } from 'src/parser/parser.module';
+import { MatcherModule } from 'src/matcher/matcher.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { ParserModule } from 'src/parser/parser.module';
     IngestModule,
     AppConfigModule,
     ParserModule,
+    MatcherModule,
   ],
   controllers: [SchedulerStatusController],
   providers: [SchedulerService, OcrService],

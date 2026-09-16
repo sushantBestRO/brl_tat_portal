@@ -9,6 +9,7 @@ import { ChatMessage } from 'src/entities';
 import { IngestService } from 'src/ingest/ingest.service';
 import { OcrService } from 'src/services/ocr.service';
 import { ParserService } from 'src/parser/parser.service';
+import { MatcherService } from 'src/matcher/matcher.service';
 
 @Injectable()
 export class SchedulerService {
@@ -37,6 +38,7 @@ export class SchedulerService {
     private ingest: IngestService,
     private ocrService: OcrService, // ← ADD THIS
     private parser: ParserService, // ← ADD THIS (check the exact class name)
+    private readonly matcher: MatcherService,
   ) {}
 
   // ─── Run every 60 seconds ───
@@ -614,11 +616,38 @@ export class SchedulerService {
             .replace(/@\w+/g, '') // Remove @mentions like @username
             .trim();
 
-          // If caption was ONLY mentions (no real text), treat as no caption
+          // // If caption was ONLY mentions (no real text), treat as no caption
+          // if (!stripped) {
+          //   body = '';
+          // } else {
+          //   body = stripped;
+          // }
+
           if (!stripped) {
             body = '';
           } else {
-            body = stripped;
+            // ─── Check if caption is just a label/command (not inquiry text) ───
+            const labelPhrases = [
+              'share rate',
+              'share rates',
+              'rate',
+              'rates',
+              'export rate',
+              'import rate',
+              'pls share rate',
+              'please share rate',
+              'quote',
+              'pls quote',
+              'best rate',
+              'rate?',
+              'rate please',
+            ];
+            const normalized = stripped.toLowerCase().replace(/[.!]+$/, '');
+            if (labelPhrases.includes(normalized)) {
+              body = ''; // Label-only caption → treat as no caption
+            } else {
+              body = stripped;
+            }
           }
         }
 
@@ -678,6 +707,81 @@ export class SchedulerService {
           quotedMsg?.message?.text ||
           null;
         const quotedWaId = quotedMsg?.id || null;
+
+        // ─── EDIT DETECTION: if an existing message's content changed, re-process ───
+        // if (!hasImage && waId) {
+        //   const existingMsg = await this.messageRepo.findOne({
+        //     where: { waMessageId: waId },
+        //   });
+
+        //   if (existingMsg && existingMsg.body && existingMsg.body !== body) {
+        //     this.logger.log(
+        //       `[Maytapi Poll] ✏️ Edited message from ${senderName}: "${existingMsg.body.slice(0, 50)}" → "${body.slice(0, 50)}"`,
+        //     );
+
+        //     // Update stored body
+        //     const oldBody = existingMsg.body;
+        //     existingMsg.body = body;
+        //     await this.messageRepo.save(existingMsg);
+
+        //     // Re-process if sender is a pricer and new body has a rate
+        //     const pricerPhone = this.config.pricerPhoneFor(
+        //       senderKey,
+        //       senderName,
+        //     );
+        //     if (pricerPhone) {
+        //       const editedReply = this.parser.parseRateReply(body);
+        //       if (editedReply) {
+        //         await this.matcher.handlePricerMessage(
+        //           existingMsg,
+        //           editedReply,
+        //         );
+        //         this.logger.log(
+        //           `[Maytapi Poll] ✏️ Edited rate re-processed → new rate: ${editedReply.rates.join(', ')}`,
+        //         );
+        //       }
+        //     } else {
+        //       this.logger.log(
+        //         `[Maytapi Poll] ✏️ Edited message was not from a pricer — body updated only`,
+        //       );
+        //     }
+        //     continue; // Don't double-process below
+        //   }
+        // }
+
+        // ─── EDIT DETECTION: if an existing message's content changed, re-process ───
+        if (!hasImage && waId) {
+          const existingMsg = await this.messageRepo.findOne({
+            where: { waMessageId: waId },
+          });
+
+          if (existingMsg && existingMsg.body && existingMsg.body !== body) {
+            this.logger.log(
+              `[Maytapi Poll] ✏️ Edited message from ${senderName}: "${existingMsg.body.slice(0, 50)}" → "${body.slice(0, 50)}"`,
+            );
+
+            existingMsg.body = body;
+            await this.messageRepo.save(existingMsg);
+
+            const pricerPhone = this.config.pricerPhoneFor(
+              senderKey,
+              senderName,
+            );
+            if (pricerPhone) {
+              const editedReply = this.parser.parseRateReply(body);
+              if (editedReply) {
+                await this.matcher.handlePricerMessage(
+                  existingMsg,
+                  editedReply,
+                );
+                this.logger.log(
+                  `[Maytapi Poll] ✏️ Edited rate re-processed → new rate: ${editedReply.rates.join(', ')}`,
+                );
+              }
+            }
+            continue;
+          }
+        }
 
         // // ─── If it's an image message, save it and create placeholder inquiry ───
         // if (hasImage && !body) {
@@ -900,6 +1004,86 @@ export class SchedulerService {
     }
   }
 
+  // // ─── Run OCR in background and update inquiry with extracted data ───
+  // private async runOcrInBackground(
+  //   imageUrl: string,
+  //   messageId: number | null,
+  //   groupKey: string,
+  //   senderKey: string,
+  //   senderName: string | null,
+  //   msgTime: Date,
+  //   waId?: string,
+  // ) {
+  //   this.logger.log(
+  //     `[OCR Background] Starting OCR for image: ${imageUrl.slice(0, 80)}...`,
+  //   );
+
+  //   const ocrText = await this.ocrService.extractText(imageUrl);
+  //   if (!ocrText) {
+  //     this.logger.log(`[OCR Background] No text extracted from image`);
+  //     return;
+  //   }
+
+  //   // Try SuperProcure format first
+  //   const spParsed = this.ocrService.parseSuperProcure(ocrText);
+
+  //   if (spParsed) {
+  //     this.logger.log(
+  //       `[OCR Background] SuperProcure format detected → lane="${spParsed.lane}", vehicle="${spParsed.vehicleType}", spec="${spParsed.spec}"`,
+  //     );
+
+  //     if (messageId) {
+  //       await this.updateInquiryFromOcr(messageId, spParsed);
+  //     } else {
+  //       await this.createInquiryFromOcr(
+  //         groupKey,
+  //         senderKey,
+  //         senderName,
+  //         msgTime,
+  //         waId,
+  //         spParsed,
+  //         ocrText,
+  //       );
+  //     }
+  //   } else {
+  //     // Try normal parseInquiry on the OCR text
+  //     const parsed = this.parser.parseInquiry(ocrText);
+  //     if (parsed) {
+  //       this.logger.log(
+  //         `[OCR Background] Generic format parsed → lane="${parsed.lane}"`,
+  //       );
+
+  //       if (messageId) {
+  //         await this.updateInquiryFromOcr(messageId, {
+  //           lane: parsed.lane,
+  //           vehicleType: parsed.vehicleType || '',
+  //           spec: parsed.spec || '',
+  //           weights: [...parsed.weights],
+  //         });
+  //       } else {
+  //         await this.createInquiryFromOcr(
+  //           groupKey,
+  //           senderKey,
+  //           senderName,
+  //           msgTime,
+  //           waId,
+  //           {
+  //             lane: parsed.lane,
+  //             vehicleType: parsed.vehicleType || '',
+  //             spec: parsed.spec || '',
+  //             weights: [...parsed.weights],
+  //           },
+  //           ocrText,
+  //         );
+  //       }
+  //     } else {
+  //       this.logger.log(
+  //         `[OCR Background] OCR text could not be parsed as inquiry`,
+  //       );
+  //     }
+  //   }
+  // }
+
   // ─── Run OCR in background and update inquiry with extracted data ───
   private async runOcrInBackground(
     imageUrl: string,
@@ -929,7 +1113,7 @@ export class SchedulerService {
       );
 
       if (messageId) {
-        await this.updateInquiryFromOcr(messageId, spParsed);
+        await this.updateInquiryFromOcr(messageId, spParsed, ocrText); // ← FIXED
       } else {
         await this.createInquiryFromOcr(
           groupKey,
@@ -950,12 +1134,16 @@ export class SchedulerService {
         );
 
         if (messageId) {
-          await this.updateInquiryFromOcr(messageId, {
-            lane: parsed.lane,
-            vehicleType: parsed.vehicleType || '',
-            spec: parsed.spec || '',
-            weights: [...parsed.weights],
-          });
+          await this.updateInquiryFromOcr(
+            messageId,
+            {
+              lane: parsed.lane,
+              vehicleType: parsed.vehicleType || '',
+              spec: parsed.spec || '',
+              weights: [...parsed.weights],
+            },
+            ocrText, // ← FIXED
+          );
         } else {
           await this.createInquiryFromOcr(
             groupKey,
@@ -980,6 +1168,59 @@ export class SchedulerService {
     }
   }
 
+  // // ─── Update an existing placeholder inquiry with OCR data ───
+  // private async updateInquiryFromOcr(
+  //   messageId: number,
+  //   parsed: {
+  //     lane: string;
+  //     vehicleType: string;
+  //     spec: string;
+  //     weights: string[];
+  //   },
+  // ) {
+  //   const msg = await this.messageRepo.findOne({ where: { id: messageId } });
+  //   if (!msg?.inquiryId) return;
+
+  //   const inq = await this.inquiryRepo.findOne({
+  //     where: { id: msg.inquiryId },
+  //   });
+  //   if (!inq) return;
+
+  //   if (
+  //     inq.lane !== '[Image Inquiry - check WhatsApp]' &&
+  //     inq.lane !== '[IMAGE INQUIRY - rate pending]'
+  //   ) {
+  //     this.logger.log(
+  //       `[OCR Background] Inquiry #${inq.id} already has real data, skipping update`,
+  //     );
+  //     return;
+  //   }
+
+  //   inq.lane = parsed.lane;
+  //   inq.vehicleType = parsed.vehicleType;
+  //   inq.spec = parsed.spec;
+  //   inq.weights = parsed.weights.sort().join(',');
+  //   // inq.rawBody = `[OCR Extracted]\n${parsed.lane}\n${parsed.vehicleType}\n${parsed.spec}`;
+  //   inq.rawBody = `[OCR Extracted]\n${parsed.lane}\n${parsed.vehicleType}\n${parsed.spec}\n\n--- Full OCR text ---\n${ocrText.slice(0, 500)}`;
+
+  //   await this.inquiryRepo.save(inq);
+
+  //   await this.eventRepo.save(
+  //     this.eventRepo.create({
+  //       inquiryId: inq.id,
+  //       at: new Date(),
+  //       kind: 'SYSTEM',
+  //       actor: 'ocr',
+  //       channel: 'system',
+  //       detail: `OCR extracted: lane=${parsed.lane}, vehicle=${parsed.vehicleType}, spec=${parsed.spec}`,
+  //     }),
+  //   );
+
+  //   this.logger.log(
+  //     `[OCR Background] Updated inquiry #${inq.id} with OCR data`,
+  //   );
+  // }
+
   // ─── Update an existing placeholder inquiry with OCR data ───
   private async updateInquiryFromOcr(
     messageId: number,
@@ -989,6 +1230,7 @@ export class SchedulerService {
       spec: string;
       weights: string[];
     },
+    ocrText: string, // ← ADD THIS PARAMETER
   ) {
     const msg = await this.messageRepo.findOne({ where: { id: messageId } });
     if (!msg?.inquiryId) return;
@@ -1012,7 +1254,7 @@ export class SchedulerService {
     inq.vehicleType = parsed.vehicleType;
     inq.spec = parsed.spec;
     inq.weights = parsed.weights.sort().join(',');
-    inq.rawBody = `[OCR Extracted]\n${parsed.lane}\n${parsed.vehicleType}\n${parsed.spec}`;
+    inq.rawBody = `[OCR Extracted]\n${parsed.lane}\n${parsed.vehicleType}\n${parsed.spec}\n\n--- Full OCR text ---\n${ocrText.slice(0, 500)}`;
 
     await this.inquiryRepo.save(inq);
 
@@ -1136,7 +1378,7 @@ export class SchedulerService {
       `Lane: ${inq.lane}\n` +
       `Requester: ${inq.requesterName}\n` +
       `Posted: ${new Date(inq.postedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}\n\n` +
-      `Please quote the rate ASAP.`;
+      `Please quote the rate ASAP on JNPT WhatsApp Group.`;
 
     // Try to send via WhatsApp provider
     const waSent = await this.sendWhatsApp(pricerPhone, message);

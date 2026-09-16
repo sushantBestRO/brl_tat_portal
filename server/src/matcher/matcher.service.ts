@@ -421,13 +421,26 @@ export class MatcherService {
       // ─── FIX: Maytapi quoted IDs are SHORT (e.g. 3EB0D662...) but stored
       // waMessageIds are FULL (false_group_id_SHORT_sender@c.us).
       // Use partial match if exact match fails. ───
+      // if (!quoted) {
+      //   quoted = await this.messageRepo
+      //     .createQueryBuilder('msg')
+      //     .where('msg.wa_message_id LIKE :pattern', {
+      //       pattern: `%${msg.quotedWaId}%`,
+      //     })
+      //     .getOne();
+      // }
+
       if (!quoted) {
         quoted = await this.messageRepo
           .createQueryBuilder('msg')
-          .where('msg.wa_message_id LIKE :pattern', {
+          .where('msg.waMessageId LIKE :pattern', {
             pattern: `%${msg.quotedWaId}%`,
           })
           .getOne();
+
+        this.logger.log(
+          `[Matcher] Pass 0 partial match: ${quoted ? `FOUND msg id=${quoted.id}, inquiryId=${quoted.inquiryId}` : 'not found'} (searched: ${msg.quotedWaId})`,
+        );
       }
 
       if (quoted?.inquiryId) {

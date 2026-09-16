@@ -1445,7 +1445,7 @@ export default function Inquiries() {
 
       {/* ─── Custom Modals ─── */}
 
-      {/* Quote Modal */}
+      {/* Quote Modal
       {showQuoteModal && quoteTarget && (
         <Modal
           title="Enter Rate Quote"
@@ -1461,6 +1461,41 @@ export default function Inquiries() {
               handleAction("quote", quoteTarget.id, {
                 rates,
                 quoted_by: "coordinator",
+              });
+          }}
+          onCancel={() => setShowQuoteModal(false)}
+        />
+      )} */}
+
+      {/* Quote Modal */}
+      {showQuoteModal && quoteTarget && (
+        <Modal
+          title={
+            quoteTarget.status === "QUOTED"
+              ? `Update Rate — Inquiry #${quoteTarget.id}`
+              : `Enter Rate Quote — Inquiry #${quoteTarget.id}`
+          }
+          input={{
+            placeholder:
+              quoteTarget.status === "QUOTED"
+                ? `Current: ₹${quoteTarget.rate ?? "—"}`
+                : "₹60000",
+            label:
+              quoteTarget.status === "QUOTED"
+                ? `Current rate: ₹${quoteTarget.rate ?? "—"} — enter the updated rate:`
+                : `Enter rate for #${quoteTarget.id}:`,
+          }}
+          confirmText={
+            quoteTarget.status === "QUOTED" ? "Update Rate" : "Quote"
+          }
+          cancelText="Cancel"
+          onConfirm={(rates) => {
+            setShowQuoteModal(false);
+            if (rates)
+              handleAction("quote", quoteTarget.id, {
+                rates,
+                quoted_by: "coordinator",
+                rate_changed: quoteTarget.status === "QUOTED",
               });
           }}
           onCancel={() => setShowQuoteModal(false)}

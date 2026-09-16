@@ -177,6 +177,75 @@ export class InquiriesService {
 
   // ─── Manually record a rate (coordinator quotes on behalf of pricer) ───
   // ─── Manually record a rate (coordinator quotes on behalf of pricer) ───
+  // async manualQuote(
+  //   id: number,
+  //   rates: string,
+  //   quotedBy = 'coordinator',
+  //   note = '',
+  // ): Promise<any> {
+  //   const inq = await this.inquiryRepo.findOne({ where: { id } });
+  //   if (!inq) throw new NotFoundException('inquiry not found');
+
+  //   inq.status = 'QUOTED';
+  //   inq.quotedAt = new Date();
+
+  //   // ─── Ownership Logic ───
+  //   // If a pricer was already selected, credit the quote to them
+  //   // If no pricer was selected, the Coordinator takes ownership
+  //   if (inq.assignedToKey) {
+  //     inq.quotedByKey = inq.assignedToKey;
+  //     inq.quotedByName = inq.assignedToName || 'Coordinator';
+  //   } else {
+  //     inq.assignedToKey = 'coordinator';
+  //     inq.assignedToName = 'Coordinator';
+  //     inq.quotedByKey = 'coordinator';
+  //     inq.quotedByName = 'Coordinator';
+  //   }
+
+  //   inq.quotedRates = rates;
+  //   inq.matchBasis = 'manual';
+  //   inq.tatSeconds =
+  //     (inq.quotedAt.getTime() - new Date(inq.postedAt).getTime()) / 1000;
+
+  //   await this.inquiryRepo.save(inq);
+
+  //   await this.eventRepo.save(
+  //     this.eventRepo.create({
+  //       inquiryId: id,
+  //       kind: 'QUOTED',
+  //       actor: inq.quotedByName,
+  //       channel: 'dashboard',
+  //       detail: `manual rate ${rates}. ${note}`.trim(),
+  //     }),
+  //   );
+
+  //   // ─── Send the quoted rate to the requester via WhatsApp ───
+  //   const requesterPhone = inq.requesterKey || '';
+  //   if (requesterPhone) {
+  //     const rateMsg =
+  //       `✅ Rate Update\n\n` +
+  //       `Lane: ${inq.lane}\n` +
+  //       `Rate: ₹${rates}\n` +
+  //       `Quoted by: ${inq.quotedByName}\n\n` +
+  //       `Thank you for your inquiry.`;
+
+  //     const sent = await this.notify.sendWhatsapp(requesterPhone, rateMsg);
+  //     await this.eventRepo.save(
+  //       this.eventRepo.create({
+  //         inquiryId: id,
+  //         kind: 'RATE_SENT',
+  //         actor: inq.quotedByName,
+  //         channel: sent ? 'whatsapp' : 'console',
+  //         detail: sent
+  //           ? `Rate sent to ${inq.requesterName} (${requesterPhone})`
+  //           : `Rate not sent (WA not configured)`,
+  //       }),
+  //     );
+  //   }
+
+  //   return this.serialize(inq);
+  // }
+
   async manualQuote(
     id: number,
     rates: string,
@@ -186,13 +255,16 @@ export class InquiriesService {
     const inq = await this.inquiryRepo.findOne({ where: { id } });
     if (!inq) throw new NotFoundException('inquiry not found');
 
+    // ─── Was this inquiry already quoted? (rate correction) ───
+    const wasAlreadyQuoted = inq.status === 'QUOTED' && !!inq.quotedRates;
+    const oldRate = wasAlreadyQuoted ? inq.quotedRates : null;
+
     inq.status = 'QUOTED';
-    inq.quotedAt = new Date();
 
     // ─── Ownership Logic ───
-    // If a pricer was already selected, credit the quote to them
-    // If no pricer was selected, the Coordinator takes ownership
-    if (inq.assignedToKey) {
+    if (wasAlreadyQuoted && inq.quotedByKey) {
+      // Rate correction — keep the original quoter's ownership
+    } else if (inq.assignedToKey) {
       inq.quotedByKey = inq.assignedToKey;
       inq.quotedByName = inq.assignedToName || 'Coordinator';
     } else {
@@ -202,48 +274,30 @@ export class InquiriesService {
       inq.quotedByName = 'Coordinator';
     }
 
+    if (!wasAlreadyQuoted) {
+      inq.quotedAt = new Date();
+      inq.tatSeconds =
+        (inq.quotedAt.getTime() - new Date(inq.postedAt).getTime()) / 1000;
+    }
+
     inq.quotedRates = rates;
-    inq.matchBasis = 'manual';
-    inq.tatSeconds =
-      (inq.quotedAt.getTime() - new Date(inq.postedAt).getTime()) / 1000;
+    inq.matchBasis = wasAlreadyQuoted ? 'manual_correction' : 'manual';
 
     await this.inquiryRepo.save(inq);
 
     await this.eventRepo.save(
       this.eventRepo.create({
         inquiryId: id,
-        kind: 'QUOTED',
-        actor: inq.quotedByName,
+        kind: wasAlreadyQuoted ? 'RATE_CHANGED' : 'QUOTED',
+        actor: quotedBy,
         channel: 'dashboard',
-        detail: `manual rate ${rates}. ${note}`.trim(),
+        detail: wasAlreadyQuoted
+          ? `Rate corrected manually: ${oldRate} → ${rates}${note ? `. ${note}` : ''}`
+          : `manual rate ${rates}. ${note}`.trim(),
       }),
     );
 
-    // ─── Send the quoted rate to the requester via WhatsApp ───
-    const requesterPhone = inq.requesterKey || '';
-    if (requesterPhone) {
-      const rateMsg =
-        `✅ Rate Update\n\n` +
-        `Lane: ${inq.lane}\n` +
-        `Rate: ₹${rates}\n` +
-        `Quoted by: ${inq.quotedByName}\n\n` +
-        `Thank you for your inquiry.`;
-
-      const sent = await this.notify.sendWhatsapp(requesterPhone, rateMsg);
-      await this.eventRepo.save(
-        this.eventRepo.create({
-          inquiryId: id,
-          kind: 'RATE_SENT',
-          actor: inq.quotedByName,
-          channel: sent ? 'whatsapp' : 'console',
-          detail: sent
-            ? `Rate sent to ${inq.requesterName} (${requesterPhone})`
-            : `Rate not sent (WA not configured)`,
-        }),
-      );
-    }
-
-    return this.serialize(inq);
+    return { updated: true, wasAlreadyQuoted, oldRate, newRate: rates };
   }
 
   // ─── Log a coordinator call outcome ───
@@ -486,8 +540,8 @@ export class InquiriesService {
       `Requester: ${inq.requesterName}\n` +
       `Posted: ${new Date(inq.postedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}\n\n` +
       `Original Message:\n${inq.rawBody || '-'}\n\n` +
-      `Please quote the rate ASAP.\n` +
-      `Reply in the WhatsApp group with the rate.`;
+      `Please quote the rate ASAP in JNPT Whatsapp Group.\n` +
+      `Reply in the JNPT WhatsApp group with the rate.`;
 
     const whatsappGroupLink =
       'https://chat.whatsapp.com/IkUNmQM94csFEQyEVJE73v';
