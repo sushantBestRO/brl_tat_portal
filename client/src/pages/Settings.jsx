@@ -1043,15 +1043,45 @@ export default function Settings() {
     }
   };
 
+  // // ─── Download CSV for the selected date range ───
+  // const downloadHistoryCsv = () => {
+  //   if (!historyStartDate) {
+  //     alert("Please select a From Date first");
+  //     return;
+  //   }
+  //   const params = new URLSearchParams({ startDate: historyStartDate });
+  //   if (historyEndDate) params.append("endDate", historyEndDate);
+  //   window.open(`/api/export.csv?${params.toString()}`, "_blank");
+  // };
   // ─── Download CSV for the selected date range ───
-  const downloadHistoryCsv = () => {
+  const downloadHistoryCsv = async () => {
     if (!historyStartDate) {
       alert("Please select a From Date first");
       return;
     }
-    const params = new URLSearchParams({ startDate: historyStartDate });
-    if (historyEndDate) params.append("endDate", historyEndDate);
-    window.open(`/api/export.csv?${params.toString()}`, "_blank");
+    try {
+      const params = { startDate: historyStartDate };
+      if (historyEndDate) params.endDate = historyEndDate;
+
+      const res = await api.get("/export.csv", {
+        params,
+        responseType: "blob",
+      });
+
+      // Trigger the browser download from the authenticated response
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `inquiries-${historyStartDate}${
+        historyEndDate ? `-to-${historyEndDate}` : ""
+      }.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("Failed to export CSV — please try again.");
+    }
   };
 
   if (loading) return <div className="card">Loading settings...</div>;

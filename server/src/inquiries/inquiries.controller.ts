@@ -99,19 +99,36 @@ export class InquiriesController {
   //   res.send(csv);
   // }
 
+  // @Get('export.csv')
+  // async exportCsv(
+  //   @Query('days') days: number,
+  //   @Query('startDate') startDate: string,
+  //   @Query('endDate') endDate: string,
+  //   @Res() res: Response,
+  // ) {
+  //   const csv = await this.svc.exportCsv(
+  //     days ? +days : 400,
+  //     startDate,
+  //     endDate,
+  //   );
+  //   res.setHeader('Content-Type', 'text/csv');
+  //   res.setHeader('Content-Disposition', 'attachment; filename=inquiries.csv');
+  //   res.send(csv);
+  // }
+
   @Get('export.csv')
   async exportCsv(
-    @Query('days') days: number,
     @Query('startDate') startDate: string,
     @Query('endDate') endDate: string,
     @Res() res: Response,
   ) {
-    const csv = await this.svc.exportCsv(
-      days ? +days : 400,
-      startDate,
-      endDate,
-    );
-    res.setHeader('Content-Type', 'text/csv');
+    if (!startDate) {
+      res.status(400).send('startDate query parameter is required');
+      return;
+    }
+
+    const csv = await this.svc.exportCsvByDateRange(startDate, endDate);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename=inquiries.csv');
     res.send(csv);
   }

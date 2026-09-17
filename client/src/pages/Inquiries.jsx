@@ -874,14 +874,14 @@ export default function Inquiries() {
               <option value={400}>All time</option>
             </select>
           </div>
-          <button onClick={fetchInquiries} className="secondary">
+          <button onClick={fetchInquiries} className="primary">
             Refresh
           </button>
-          <a href="/api/export.csv" target="_blank" rel="noreferrer">
+          {/* <a href="/api/export.csv" target="_blank" rel="noreferrer">
             <button className="secondary" style={{ textDecoration: "none" }}>
               Export CSV
             </button>
-          </a>
+          </a> */}
         </div>
       </div>
 

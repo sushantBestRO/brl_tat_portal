@@ -819,120 +819,120 @@ export class InquiriesService {
 
   // ─── Export inquiries as CSV ───
 
-  async exportCsv(
-    days = 400,
-    startDate?: string,
-    endDate?: string,
-  ): Promise<string> {
-    let filtered: Inquiry[];
+  // async exportCsv(
+  //   days = 400,
+  //   startDate?: string,
+  //   endDate?: string,
+  // ): Promise<string> {
+  //   let filtered: Inquiry[];
 
-    if (startDate) {
-      // ─── History page: use explicit date range ───
-      const start = new Date(startDate);
-      start.setHours(0, 0, 0, 0);
+  //   if (startDate) {
+  //     // ─── History page: use explicit date range ───
+  //     const start = new Date(startDate);
+  //     start.setHours(0, 0, 0, 0);
 
-      const end = new Date(endDate || startDate);
-      end.setHours(23, 59, 59, 999);
+  //     const end = new Date(endDate || startDate);
+  //     end.setHours(23, 59, 59, 999);
 
-      const rows = await this.inquiryRepo
-        .createQueryBuilder('i')
-        .where('i.postedAt >= :start AND i.postedAt <= :end', { start, end })
-        .andWhere('i.archived = false')
-        .orderBy('i.postedAt', 'ASC')
-        .getMany();
-      filtered = rows;
-    } else {
-      // ─── Inquiries page: use days window ───
-      const since = new Date(Date.now() - days * 86400000);
-      const rows = await this.inquiryRepo.find({
-        where: { archived: false },
-        order: { postedAt: 'ASC' },
-      });
-      filtered = rows.filter((r) => new Date(r.postedAt) >= since);
-    }
+  //     const rows = await this.inquiryRepo
+  //       .createQueryBuilder('i')
+  //       .where('i.postedAt >= :start AND i.postedAt <= :end', { start, end })
+  //       .andWhere('i.archived = false')
+  //       .orderBy('i.postedAt', 'ASC')
+  //       .getMany();
+  //     filtered = rows;
+  //   } else {
+  //     // ─── Inquiries page: use days window ───
+  //     const since = new Date(Date.now() - days * 86400000);
+  //     const rows = await this.inquiryRepo.find({
+  //       where: { archived: false },
+  //       order: { postedAt: 'ASC' },
+  //     });
+  //     filtered = rows.filter((r) => new Date(r.postedAt) >= since);
+  //   }
 
-    if (!filtered.length) return 'No inquiries found for this date range.';
+  //   if (!filtered.length) return 'No inquiries found for this date range.';
 
-    const header =
-      'ID,Requester,Lane,Vehicle Type,Spec,Posted At,Status,Assigned To,Quoted At,Quoted By,Rates,Previous Rates,TAT (min),Followups,Reminders,Match Basis';
-    const lines = [header];
+  //   const header =
+  //     'ID,Requester,Lane,Vehicle Type,Spec,Posted At,Status,Assigned To,Quoted At,Quoted By,Rates,Previous Rates,TAT (min),Followups,Reminders,Match Basis';
+  //   const lines = [header];
 
-    // ─── Helper to resolve phone numbers to team member names ───
-    const resolveName = (name: string, key: string | null): string => {
-      if (name === 'coordinator') return 'Coordinator';
-      if (name && !/^\+?\d+$/.test(name.replace(/\s/g, ''))) return name;
+  //   // ─── Helper to resolve phone numbers to team member names ───
+  //   const resolveName = (name: string, key: string | null): string => {
+  //     if (name === 'coordinator') return 'Coordinator';
+  //     if (name && !/^\+?\d+$/.test(name.replace(/\s/g, ''))) return name;
 
-      const rawKey = key || '';
-      for (const [phone, member] of Object.entries(this.config.PRICING_TEAM)) {
-        // ─── FIX: Use normalizePhone for consistent matching ───
-        if (
-          this.config.normalizePhone(phone) ===
-          this.config.normalizePhone(rawKey)
-        ) {
-          return member.name;
-        }
-      }
-      return name || 'Unknown';
-    };
+  //     const rawKey = key || '';
+  //     for (const [phone, member] of Object.entries(this.config.PRICING_TEAM)) {
+  //       // ─── FIX: Use normalizePhone for consistent matching ───
+  //       if (
+  //         this.config.normalizePhone(phone) ===
+  //         this.config.normalizePhone(rawKey)
+  //       ) {
+  //         return member.name;
+  //       }
+  //     }
+  //     return name || 'Unknown';
+  //   };
 
-    for (const i of filtered) {
-      const tatMin = i.tatSeconds
-        ? Math.round((i.tatSeconds / 60) * 10) / 10
-        : '';
+  //   for (const i of filtered) {
+  //     const tatMin = i.tatSeconds
+  //       ? Math.round((i.tatSeconds / 60) * 10) / 10
+  //       : '';
 
-      const postedAt = i.postedAt
-        ? new Date(i.postedAt).toLocaleString('en-IN', {
-            timeZone: 'Asia/Kolkata',
-            day: '2-digit',
-            month: '2-digit',
-            year: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false,
-          })
-        : '';
-      const quotedAt = i.quotedAt
-        ? new Date(i.quotedAt).toLocaleString('en-IN', {
-            timeZone: 'Asia/Kolkata',
-            day: '2-digit',
-            month: '2-digit',
-            year: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false,
-          })
-        : '';
+  //     const postedAt = i.postedAt
+  //       ? new Date(i.postedAt).toLocaleString('en-IN', {
+  //           timeZone: 'Asia/Kolkata',
+  //           day: '2-digit',
+  //           month: '2-digit',
+  //           year: 'numeric',
+  //           hour: '2-digit',
+  //           minute: '2-digit',
+  //           hour12: false,
+  //         })
+  //       : '';
+  //     const quotedAt = i.quotedAt
+  //       ? new Date(i.quotedAt).toLocaleString('en-IN', {
+  //           timeZone: 'Asia/Kolkata',
+  //           day: '2-digit',
+  //           month: '2-digit',
+  //           year: 'numeric',
+  //           hour: '2-digit',
+  //           minute: '2-digit',
+  //           hour12: false,
+  //         })
+  //       : '';
 
-      const quotedBy = resolveName(i.quotedByName || '', i.quotedByKey);
-      const assignedTo = resolveName(i.assignedToName || '', i.assignedToKey);
+  //     const quotedBy = resolveName(i.quotedByName || '', i.quotedByKey);
+  //     const assignedTo = resolveName(i.assignedToName || '', i.assignedToKey);
 
-      const cells = [
-        i.id,
-        i.requesterName || '',
-        i.lane || '',
-        i.vehicleType || '',
-        i.spec || '',
-        postedAt,
-        i.status || '',
-        assignedTo,
-        quotedAt,
-        quotedBy,
-        i.quotedRates || '',
-        i.previousRates || '',
-        tatMin,
-        i.followupCount || 0,
-        i.reminderCount || 0,
-        i.matchBasis || '',
-      ];
+  //     const cells = [
+  //       i.id,
+  //       i.requesterName || '',
+  //       i.lane || '',
+  //       i.vehicleType || '',
+  //       i.spec || '',
+  //       postedAt,
+  //       i.status || '',
+  //       assignedTo,
+  //       quotedAt,
+  //       quotedBy,
+  //       i.quotedRates || '',
+  //       i.previousRates || '',
+  //       tatMin,
+  //       i.followupCount || 0,
+  //       i.reminderCount || 0,
+  //       i.matchBasis || '',
+  //     ];
 
-      const escaped = cells.map(
-        (c) => `"${(c ?? '').toString().replace(/"/g, '""')}"`,
-      );
-      lines.push(escaped.join(','));
-    }
+  //     const escaped = cells.map(
+  //       (c) => `"${(c ?? '').toString().replace(/"/g, '""')}"`,
+  //     );
+  //     lines.push(escaped.join(','));
+  //   }
 
-    return lines.join('\n');
-  }
+  //   return lines.join('\n');
+  // }
 
   // Export CSV by Date Range From and To
   // ─── Export inquiries by explicit date range (History page) ───
