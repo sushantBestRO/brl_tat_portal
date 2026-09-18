@@ -579,7 +579,9 @@ const IMPLICIT_LANE_ASK_RE = /\b(import|export)\s*container\b/i;
 // // Extract weight values: "weight 20300 kg"
 // const WEIGHT_RE = /weight\s*([\d.,]+)\s*(kg|mt)?/gi;
 // Extract weight values: "weight 20300 kg" or "gross 17960"
-const WEIGHT_RE = /(?:weight|gross)\s*([\d.,]+)\s*(kg|mt)?/gi;
+// const WEIGHT_RE = /(?:weight|gross)\s*([\d.,]+)\s*(kg|mt)?/gi;
+const WEIGHT_RE =
+  /(?:weight|gross|wt)\s*[-:=]?\s*([\d][\d.,]*)\s*(kg|mt|tn|tons?|tonnes?)?\s*(\+?\s*c)?\b/gi;
 
 // Phone numbers (to strip them so they don't get mistaken for rates)
 const PHONE_RE = /(\+91[\s-]?\d{5}[\s-]?\d{5}|\b[6-9]\d{9}\b)/g;
@@ -592,7 +594,7 @@ const AMOUNT_RE = /(?<![\d/])(\d{4,6})(?=\s*(?:\/-|\/|\b))/g;
 
 // Must contain a rate keyword to be a rate reply
 const RATE_KEYWORD_RE =
-  /(market rate|mkt|rate[\s:=-]*\d|\d{4,6}\s*\/-|\d{4,6}\s*\/)/i;
+  /(market rate|mkt|rate[\s:.=–-]*\d|\d{4,6}\s*\/-|\d{4,6}\s*\/)/i;
 
 // Detects "40ft-30000/-", "20'-25000/-", "1x40'-30000" style size+rate pairs
 // Detects "40ft-30000/-", "20'-25000/-", "1x40'-30000" style size+rate pairs
@@ -863,6 +865,15 @@ export class ParserService {
     return out;
   }
 
+  // ─── Heuristic: truck/driver-details reply, not an inquiry ───
+  private looksLikeTransportDetails(body: string): boolean {
+    const vehicleNo = /\b[A-Z]{2}\d{1,2}[A-Z]{1,3}\d{4}\b/.test(
+      body.toUpperCase(),
+    );
+    const mobileCount = (body.match(/(\+91|0)?[6-9]\d{9}/g) || []).length;
+    return vehicleNo && mobileCount >= 2;
+  }
+
   // ─── Helper: clean up extracted text ───
   private cleanSpecText(text: string): string {
     let cleaned = text;
@@ -1033,6 +1044,33 @@ export class ParserService {
 
   //   return lane.slice(0, 120);
   // }
+
+  // ─── Detect & parse a multi-lane rate table (e.g. "Bhiwandi  Wagholi, Pune  6 MT") ───
+  isLaneTable(body: string): boolean {
+    return this.parseLaneTable(body).length >= 3;
+  }
+
+  parseLaneTable(
+    body: string,
+  ): { lane: string; spec: string; rate?: string }[] {
+    const out: { lane: string; spec: string; rate?: string }[] = [];
+    for (const line of body.split(/\r?\n/)) {
+      // Columns separated by 2+ spaces: FROM   TO   WEIGHT UNIT   [rate..N]
+      const m = line.match(
+        /^\s*([A-Za-z][A-Za-z .&/-]{1,30}?)\s{2,}([A-Za-z][A-Za-z .,&()/-]{1,40}?)\s{2,}(\d+(?:\.\d+)?)\s*(MT|KG|TN|TONS?)\s*(?:rate[.\s:=-]*(\d{4,6}))?\s*$/i,
+      );
+      if (m) {
+        const [, from, to, wt, unit, rate] = m;
+        out.push({
+          lane: this.standardizeLane(`${from} TO ${to}`),
+          spec: `${wt}${unit.toUpperCase()}`,
+          ...(rate ? { rate } : {}),
+        });
+      }
+    }
+    return out;
+  }
+
   // ─── Helper: extract lane (first line, cut before specs) ───
   laneOf(body: string): string {
     const lines = body
@@ -1127,6 +1165,13 @@ export class ParserService {
 
     // ─── FIX: Clean up trailing dots and commas ───
     lane = lane.replace(/[.,;]+$/, '').trim();
+
+    // ─── Keep long destinations readable: first segment + pincode ───
+    if (lane.length > 40) {
+      const pin = lane.match(/\b\d{6}\b/)?.[0] || '';
+      const base = lane.split(/[;,]/)[0].slice(0, 34).trim();
+      lane = pin ? `${base} (${pin})` : base;
+    }
 
     // ─── ADD THIS LINE: Standardize before returning ───
     lane = this.standardizeLane(lane);
@@ -1523,6 +1568,9 @@ export class ParserService {
     if (body.length < 5 || (body.includes('omitted') && body.length < 60)) {
       return null;
     }
+
+    // ─── NEW: reject truck/driver-details replies ───
+    if (this.looksLikeTransportDetails(body)) return null;
 
     // if (QUOTED_RATE_IN_BODY_RE.test(body)) return null;
 

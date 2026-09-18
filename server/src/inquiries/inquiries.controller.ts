@@ -1,4 +1,13 @@
-import { Controller, Get, Post, Body, Param, Query, Res } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Param,
+  Query,
+  Res,
+  ParseIntPipe,
+} from '@nestjs/common';
 import type { Response } from 'express';
 import { InquiriesService } from './inquiries.service';
 
@@ -34,6 +43,25 @@ export class InquiriesController {
   @Get('inquiries/scorecard/requesters')
   async requesterScorecard(@Query('days') days?: number) {
     return this.svc.requesterScorecard(days ? +days : 90);
+  }
+
+  @Get('inquiries/deleted')
+  deletedInquiries() {
+    return this.svc.deletedInquiries();
+  }
+
+  // ─── Batch notes lookup for History table ───
+  @Get('inquiries/notes-batch')
+  notesBatch(@Query('ids') ids: string) {
+    return this.svc.notesBatch(
+      (ids || '').split(',').map(Number).filter(Boolean),
+    );
+  }
+
+  // ─── Coordinator Notes ───
+  @Get('inquiries/:id/notes')
+  notes(@Param('id', ParseIntPipe) id: number) {
+    return this.svc.getNotes(id);
   }
 
   // ─── Wildcard route comes LAST ───
@@ -91,6 +119,37 @@ export class InquiriesController {
     return this.svc.close(+id, body.reason, body.note);
   }
 
+  // ─── Coordinator Notes ───
+
+  @Post('inquiries/:id/note')
+  addNote(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: { note: string },
+  ) {
+    return this.svc.addCoordinatorNote(id, dto.note);
+  }
+
+  // @Post('inquiries/:id/delete')
+  // deleteInquiry(@Param('id') id: string, @Body() body: { by?: string }) {
+  //   return this.svc.deleteInquiry(+id, body.by || 'coordinator');
+  // }
+  @Post('inquiries/:id/delete')
+  deleteInquiry(
+    @Param('id') id: string,
+    @Body() body: { reason?: string; by?: string },
+  ) {
+    return this.svc.deleteInquiry(
+      +id,
+      body.reason || '',
+      body.by || 'coordinator',
+    );
+  }
+
+  @Post('inquiries/:id/restore')
+  restoreInquiry(@Param('id') id: string, @Body() body: { by?: string }) {
+    return this.svc.restoreInquiry(+id, body.by || 'coordinator');
+  }
+
   // @Get('export.csv')
   // async exportCsv(@Query('days') days: number, @Res() res: Response) {
   //   const csv = await this.svc.exportCsv(days ? +days : 400);
@@ -130,7 +189,7 @@ export class InquiriesController {
     const csv = await this.svc.exportCsvByDateRange(startDate, endDate);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename=inquiries.csv');
-    res.send(csv);
+    res.send('\uFEFF' + csv);
   }
 
   @Get('daily-details')

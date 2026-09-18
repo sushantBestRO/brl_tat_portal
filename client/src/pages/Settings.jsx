@@ -908,6 +908,7 @@ export default function Settings() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const [autoWhatsAppEnabled, setAutoWhatsAppEnabled] = useState(false);
+  const [notesMap, setNotesMap] = useState({});
 
   const fetchAll = async () => {
     setLoading(true);
@@ -1033,6 +1034,18 @@ export default function Settings() {
         },
       });
       setHistoryData(res.data);
+      const ids = res.data.map((i) => i.id).join(",");
+      if (ids) {
+        try {
+          const nres = await api.get("/inquiries/notes-batch", {
+            params: { ids },
+          });
+          setNotesMap(nres.data);
+        } catch {
+          setNotesMap({});
+        }
+      }
+
       if (res.data.length === 0) {
         setHistoryError("No inquiries found in this date range.");
       }
@@ -1986,6 +1999,8 @@ export default function Settings() {
                       <th>Assigned To</th>
                       <th>Rate</th>
                       <th>TAT</th>
+                      <th>Notes</th> {/* ← ADD */}
+                      <th>Close Reason</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2027,6 +2042,7 @@ export default function Settings() {
                               )
                             : "-"}
                         </td>
+
                         <td>
                           <span
                             className={`badge badge-${inq.status.toLowerCase().replace("_", "-")}`}
@@ -2039,6 +2055,28 @@ export default function Settings() {
                           {inq.quoted_rates ? `₹${inq.quoted_rates}` : "-"}
                         </td>
                         <td>{inq.tat || "-"}</td>
+                        <td
+                          style={{
+                            maxWidth: 220,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                          title={notesMap[inq.id] || ""}
+                        >
+                          {notesMap[inq.id] || "-"}
+                        </td>
+                        <td
+                          style={{
+                            maxWidth: 180,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                          title={inq.close_reason || ""}
+                        >
+                          {inq.close_reason || "-"}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

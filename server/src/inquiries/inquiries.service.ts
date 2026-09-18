@@ -4,7 +4,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Inquiry } from '../entities/inquiry.entity';
 import { Event } from '../entities/event.entity';
 import { ChatMessage } from '../entities/message.entity';
@@ -73,6 +73,7 @@ export class InquiriesService {
       tat,
       followups: inq.followupCount || 0,
       reminders: inq.reminderCount || 0,
+      close_reason: inq.closeReason || '',
     };
   }
 
@@ -522,6 +523,95 @@ export class InquiriesService {
     return this.serialize(inq);
   }
 
+  // ─── Soft-delete (archive) an inquiry — coordinator action ───
+  // async deleteInquiry(id: number, by: string = 'coordinator') {
+  //   const inq = await this.inquiryRepo.findOne({ where: { id } });
+  //   if (!inq) throw new NotFoundException('inquiry not found');
+
+  //   inq.archived = true;
+  //   await this.inquiryRepo.save(inq);
+
+  //   await this.eventRepo.save(
+  //     this.eventRepo.create({
+  //       inquiryId: id,
+  //       kind: 'STATUS_CHANGE',
+  //       actor: by,
+  //       channel: 'dashboard',
+  //       detail:
+  //         'Inquiry deleted by coordinator (archived, hidden from lists & reports)',
+  //     }),
+  //   );
+  //   return { deleted: true };
+  // }
+
+  // ─── Soft-delete (archive) an inquiry — reason recorded for audit ───
+  async deleteInquiry(id: number, reason: string, by: string = 'coordinator') {
+    const inq = await this.inquiryRepo.findOne({ where: { id } });
+    if (!inq) throw new NotFoundException('inquiry not found');
+
+    inq.archived = true;
+    await this.inquiryRepo.save(inq);
+
+    await this.eventRepo.save(
+      this.eventRepo.create({
+        inquiryId: id,
+        kind: 'DELETE',
+        actor: by,
+        channel: 'dashboard',
+        detail: `Inquiry deleted (archived). Reason: ${reason || 'not specified'}`,
+      }),
+    );
+    return { deleted: true };
+  }
+
+  // ─── List soft-deleted inquiries with their delete reason ───
+  async deletedInquiries() {
+    const rows = await this.inquiryRepo
+      .createQueryBuilder('i')
+      .where('i.archived = true')
+      .orderBy('i.postedAt', 'DESC')
+      .getMany();
+
+    const ids = rows.map((r) => r.id);
+    const delEvents = ids.length
+      ? await this.eventRepo.find({
+          where: { inquiryId: In(ids), kind: 'DELETE' },
+        })
+      : [];
+    const delBy: Record<number, any> = {};
+    for (const e of delEvents) delBy[e.inquiryId] = e;
+
+    return rows.map((r) => ({
+      id: r.id,
+      requester: r.requesterName || 'Unknown',
+      lane: r.lane || '',
+      spec: r.spec || '',
+      posted_at: r.postedAt,
+      status: r.status,
+      deleted_at: delBy[r.id]?.at || null,
+      deleted_by: delBy[r.id]?.actor || '',
+      delete_reason: delBy[r.id]?.detail || '(no reason recorded)',
+    }));
+  }
+
+  // ─── Restore a deleted inquiry ───
+  async restoreInquiry(id: number, by = 'coordinator') {
+    const inq = await this.inquiryRepo.findOne({ where: { id } });
+    if (!inq) throw new NotFoundException('inquiry not found');
+    inq.archived = false;
+    await this.inquiryRepo.save(inq);
+    await this.eventRepo.save(
+      this.eventRepo.create({
+        inquiryId: id,
+        kind: 'STATUS_CHANGE',
+        actor: by,
+        channel: 'dashboard',
+        detail: 'Inquiry restored from deleted (un-archived)',
+      }),
+    );
+    return { restored: true };
+  }
+
   // ─── Send an ad-hoc reminder (manual trigger from dashboard) ─── for specific assignee
 
   async adhocRemind(id: number, channel: string, note = ''): Promise<any> {
@@ -606,6 +696,59 @@ export class InquiriesService {
     );
 
     return { ok: true, sent };
+  }
+
+  // ─── Append a coordinator note (follow-up log) ───
+  async addCoordinatorNote(id: number, note: string) {
+    const inq = await this.inquiryRepo.findOne({ where: { id } });
+    if (!inq) throw new NotFoundException('inquiry not found');
+
+    const clean = (note || '').trim().slice(0, 1000);
+    if (!clean) throw new BadRequestException('note cannot be empty');
+
+    await this.eventRepo.save(
+      this.eventRepo.create({
+        inquiryId: id,
+        kind: 'NOTE',
+        actor: 'coordinator',
+        channel: 'dashboard',
+        detail: clean,
+      }),
+    );
+    return { added: true };
+  }
+
+  // ─── Notes timelines for a batch of inquiry IDs: { [id]: "17/09 17:46 - note; ..." } ───
+  async notesBatch(ids: number[]) {
+    if (!ids.length) return {};
+    const rows = await this.eventRepo.find({
+      where: { inquiryId: In(ids), kind: 'NOTE' },
+      order: { at: 'ASC' },
+    });
+    const out: Record<string, string> = {};
+    for (const n of rows) {
+      const t = new Date(n.at)
+        .toLocaleString('en-IN', {
+          timeZone: 'Asia/Kolkata',
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        })
+        .replace(',', '');
+      out[n.inquiryId] = (out[n.inquiryId] || '') + `${t} - ${n.detail}; `;
+    }
+    return out;
+  }
+
+  // ─── Get all notes for an inquiry (oldest first) ───
+  async getNotes(id: number) {
+    return this.eventRepo.find({
+      where: { inquiryId: id, kind: 'NOTE' },
+      order: { at: 'ASC' },
+    });
   }
 
   // ─── Per-pricer TAT scorecard ───
@@ -935,16 +1078,123 @@ export class InquiriesService {
   // }
 
   // Export CSV by Date Range From and To
+  // // ─── Export inquiries by explicit date range (History page) ───
+  // async exportCsvByDateRange(
+  //   startDate: string,
+  //   endDate: string,
+  // ): Promise<string> {
+  //   const start = new Date(startDate);
+  //   start.setHours(0, 0, 0, 0);
+
+  //   const end = new Date(endDate);
+  //   end.setHours(23, 59, 59, 999);
+
+  //   const inquiries = await this.inquiryRepo
+  //     .createQueryBuilder('i')
+  //     .where('i.postedAt >= :start AND i.postedAt <= :end', { start, end })
+  //     .andWhere('i.archived = false')
+  //     .orderBy('i.postedAt', 'ASC')
+  //     .getMany();
+
+  //   if (!inquiries.length) return 'No inquiries found for this date range.';
+
+  //   const header =
+  //     'ID,Requester,Lane,Vehicle Type,Spec,Posted At,Status,Assigned To,Quoted At,Quoted By,Rates,Previous Rates,TAT (min),Followups,Reminders,Match Basis';
+  //   const lines = [header];
+
+  //   // ─── Helper to resolve phone numbers to team member names ───
+  //   const resolveName = (name: string, key: string | null): string => {
+  //     if (name === 'coordinator') return 'Coordinator';
+  //     if (name && !/^\+?\d+$/.test(name.replace(/\s/g, ''))) return name;
+
+  //     const rawKey = key || '';
+  //     for (const [phone, member] of Object.entries(this.config.PRICING_TEAM)) {
+  //       if (
+  //         this.config.normalizePhone(phone) ===
+  //         this.config.normalizePhone(rawKey)
+  //       ) {
+  //         return member.name;
+  //       }
+  //     }
+  //     return name || 'Unknown';
+  //   };
+
+  //   for (const i of inquiries) {
+  //     const tatMin = i.tatSeconds
+  //       ? Math.round((i.tatSeconds / 60) * 10) / 10
+  //       : '';
+
+  //     const postedAt = i.postedAt
+  //       ? new Date(i.postedAt).toLocaleString('en-IN', {
+  //           timeZone: 'Asia/Kolkata',
+  //           day: '2-digit',
+  //           month: '2-digit',
+  //           year: 'numeric',
+  //           hour: '2-digit',
+  //           minute: '2-digit',
+  //           hour12: false,
+  //         })
+  //       : '';
+  //     const quotedAt = i.quotedAt
+  //       ? new Date(i.quotedAt).toLocaleString('en-IN', {
+  //           timeZone: 'Asia/Kolkata',
+  //           day: '2-digit',
+  //           month: '2-digit',
+  //           year: 'numeric',
+  //           hour: '2-digit',
+  //           minute: '2-digit',
+  //           hour12: false,
+  //         })
+  //       : '';
+
+  //     const quotedBy = resolveName(i.quotedByName || '', i.quotedByKey);
+  //     const assignedTo = resolveName(i.assignedToName || '', i.assignedToKey);
+
+  //     const cells = [
+  //       i.id,
+  //       i.requesterName || '',
+  //       i.lane || '',
+  //       i.vehicleType || '',
+  //       i.spec || '',
+  //       postedAt,
+  //       i.status || '',
+  //       assignedTo,
+  //       quotedAt,
+  //       quotedBy,
+  //       i.quotedRates || '',
+  //       i.previousRates || '',
+  //       tatMin,
+  //       i.followupCount || 0,
+  //       i.reminderCount || 0,
+  //       i.matchBasis || '',
+  //     ];
+
+  //     const escaped = cells.map(
+  //       (c) => `"${(c ?? '').toString().replace(/"/g, '""')}"`,
+  //     );
+  //     lines.push(escaped.join(','));
+  //   }
+
+  //   return lines.join('\n');
+  // }
+
+  // Recent commented
   // ─── Export inquiries by explicit date range (History page) ───
   async exportCsvByDateRange(
     startDate: string,
     endDate: string,
   ): Promise<string> {
-    const start = new Date(startDate);
-    start.setHours(0, 0, 0, 0);
+    // const start = new Date(startDate);
+    // start.setHours(0, 0, 0, 0);
 
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999);
+    // const end = new Date(endDate);
+    // end.setHours(23, 59, 59, 999);
+
+    // ─── Date parsing: handle missing endDate + explicit local time ───
+    const start = new Date(startDate + 'T00:00:00');
+    const end = endDate
+      ? new Date(endDate + 'T23:59:59.999')
+      : new Date(startDate + 'T23:59:59.999');
 
     const inquiries = await this.inquiryRepo
       .createQueryBuilder('i')
@@ -955,8 +1205,49 @@ export class InquiriesService {
 
     if (!inquiries.length) return 'No inquiries found for this date range.';
 
+    // ─── Aggregate events: reminders + coordinator notes for these inquiries ───
+    const ids = inquiries.map((i) => i.id);
+    const evtRows = await this.eventRepo
+      .createQueryBuilder('e')
+      .select('e.inquiryId', 'inquiryId')
+      .addSelect('e.kind', 'kind')
+      .addSelect('e.at', 'at')
+      .addSelect('e.detail', 'detail')
+      .where('e.inquiryId IN (:...ids)', { ids })
+      .andWhere('e.kind IN (:...kinds)', {
+        kinds: ['REMINDER_WA', 'REMINDER_EMAIL', 'NOTE'],
+      })
+      .orderBy('e.at', 'ASC')
+      .getRawMany();
+
+    const waReminders: Record<number, number> = {};
+    const emailReminders: Record<number, number> = {};
+    const notesByInquiry: Record<number, string> = {};
+    for (const r of evtRows) {
+      const iid = Number(r.inquiryId);
+      if (r.kind === 'REMINDER_WA') {
+        waReminders[iid] = (waReminders[iid] || 0) + 1;
+      } else if (r.kind === 'REMINDER_EMAIL') {
+        emailReminders[iid] = (emailReminders[iid] || 0) + 1;
+      } else if (r.kind === 'NOTE') {
+        const t = new Date(r.at)
+          .toLocaleString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            day: '2-digit',
+            month: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+          })
+          .replace(',', '');
+        notesByInquiry[iid] =
+          (notesByInquiry[iid] || '') + `${t} — ${r.detail}; `;
+      }
+    }
+
     const header =
-      'ID,Requester,Lane,Vehicle Type,Spec,Posted At,Status,Assigned To,Quoted At,Quoted By,Rates,Previous Rates,TAT (min),Followups,Reminders,Match Basis';
+      'ID,Requester,Lane,Vehicle Type,Spec,Posted At,Status,Assigned To,Quoted At,Quoted By,Rates,Previous Rates,TAT (min),Followups,WA Reminders,Email Reminders,Match Basis,Coordinator Notes,Close Reason';
+
     const lines = [header];
 
     // ─── Helper to resolve phone numbers to team member names ───
@@ -1015,6 +1306,7 @@ export class InquiriesService {
         i.spec || '',
         postedAt,
         i.status || '',
+
         assignedTo,
         quotedAt,
         quotedBy,
@@ -1022,8 +1314,12 @@ export class InquiriesService {
         i.previousRates || '',
         tatMin,
         i.followupCount || 0,
-        i.reminderCount || 0,
+        waReminders[i.id] || 0, // ← WA Reminders (counted from events)
+        emailReminders[i.id] || 0, // ← Email Reminders (counted from events)
         i.matchBasis || '',
+
+        notesByInquiry[i.id] || '', // ← Coordinator Notes timeline
+        i.closeReason || '', // ← ADD: "withdrawn. self rated" etc.
       ];
 
       const escaped = cells.map(

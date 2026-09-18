@@ -726,9 +726,11 @@
 import { useState, useEffect } from "react";
 import api from "../api";
 import Modal from "../components/Modal";
+import NotesSection from "../components/NoteSection";
 import { FaWhatsapp } from "react-icons/fa";
 import { SiGmail } from "react-icons/si";
 import { Phone, Megaphone } from "lucide-react";
+// import { FaWhatsapp, FaStickyNote } from "react-icons/fa";
 
 export default function Inquiries() {
   const [inquiries, setInquiries] = useState([]);
@@ -750,6 +752,13 @@ export default function Inquiries() {
   const [closeTarget, setCloseTarget] = useState(null);
   const [showBroadcastModal, setShowBroadcastModal] = useState(false);
   const [broadcastTarget, setBroadcastTarget] = useState(null);
+
+  const [showKebab, setShowKebab] = useState(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+
+  const [closeChoice, setCloseChoice] = useState(""); // 'won' | 'lost' | 'withdrawn'
+  const [closeNote, setCloseNote] = useState("");
 
   const showToast = (message, type = "success") => {
     setToast({ message, type });
@@ -782,6 +791,18 @@ export default function Inquiries() {
     }
   };
 
+  // ─── Close kebab menu when clicking anywhere else ───
+  useEffect(() => {
+    if (!showKebab) return;
+    const close = () => setShowKebab(null);
+    // tiny delay so the click that OPENED the menu doesn't also close it
+    const t = setTimeout(() => document.addEventListener("click", close), 0);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener("click", close);
+    };
+  }, [showKebab]);
+
   useEffect(() => {
     fetchInquiries();
     api
@@ -790,12 +811,29 @@ export default function Inquiries() {
       .catch(() => {});
   }, [filter, days]);
 
+  // useEffect(() => {
+  //   const interval = setInterval(() => {
+  //     fetchInquiries();
+  //   }, 15000);
+  //   return () => clearInterval(interval);
+  // }, [filter, days]);
+
+  // ─── Anything open/being-interacted with? Pause auto-refresh ───
+  const isInteracting =
+    detail || // View modal open
+    showDeleteModal || // delete confirmation
+    showKebab || // kebab dropdown open
+    showCallModal ||
+    showCloseModal; // + any other modal states on this page
+
   useEffect(() => {
     const interval = setInterval(() => {
-      fetchInquiries();
+      if (!isInteracting) {
+        fetchInquiries();
+      }
     }, 15000);
     return () => clearInterval(interval);
-  }, [filter, days]);
+  }, [isInteracting, filter, days]); // ← isInteracting in deps (no stale value)
 
   const handleAction = async (action, id, payload = {}) => {
     try {
@@ -832,7 +870,8 @@ export default function Inquiries() {
     }
   };
 
-  if (loading) return <div className="card">Loading inquiries...</div>;
+  if (loading && inquiries.length === 0)
+    return <div className="card">Loading inquiries...</div>;
   if (error)
     return (
       <div className="card" style={{ color: "var(--danger)" }}>
@@ -843,7 +882,6 @@ export default function Inquiries() {
   return (
     <div>
       <h1 className="page-title">Inquiries</h1>
-
       {/* Filter Bar */}
       <div className="card" style={{ padding: "16px 20px" }}>
         <div className="row" style={{ flexWrap: "wrap" }}>
@@ -884,7 +922,6 @@ export default function Inquiries() {
           </a> */}
         </div>
       </div>
-
       {/* Inquiries Table */}
       <div className="card" style={{ padding: 0, marginTop: "16px" }}>
         {inquiries.length === 0 ? (
@@ -1041,6 +1078,66 @@ export default function Inquiries() {
                           >
                             Quote
                           </button>
+                          {/* <button
+                            title="Add note"
+                            onClick={() => fetchDetail(inq.id)}
+                          >
+                            📝
+                          </button> */}
+                          {/* <button
+                            title="Add note"
+                            onClick={() => fetchDetail(inq.id)}
+                          >
+                            <FaStickyNote size={16} color="#eab308" />
+                          </button> */}
+
+                          <div style={{ position: "relative" }}>
+                            <button
+                              title="More options"
+                              onClick={() =>
+                                setShowKebab(
+                                  showKebab === inq.id ? null : inq.id,
+                                )
+                              }
+                            >
+                              ⋮
+                            </button>
+                            {showKebab === inq.id && (
+                              <div
+                                style={{
+                                  position: "absolute",
+                                  right: 0,
+                                  top: "100%",
+                                  zIndex: 100,
+                                  background: "#fff",
+                                  border: "1px solid var(--border)",
+                                  borderRadius: "6px",
+                                  boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                                  minWidth: "160px",
+                                }}
+                              >
+                                <button
+                                  style={{
+                                    display: "block",
+                                    width: "100%",
+                                    padding: "8px 12px",
+                                    textAlign: "left",
+                                    background: "transparent",
+                                    border: "none",
+                                    cursor: "pointer",
+                                    color: "var(--danger)",
+                                  }}
+                                  onClick={() => {
+                                    setShowKebab(null);
+                                    setDeleteTarget(inq);
+                                    setShowDeleteModal(true);
+                                  }}
+                                >
+                                  🗑 Delete Inquiry
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </td>
                     </tr>
@@ -1051,7 +1148,6 @@ export default function Inquiries() {
           </div>
         )}
       </div>
-
       {/* Detail Modal with Action Buttons */}
       {detail && (
         <div
@@ -1234,6 +1330,9 @@ export default function Inquiries() {
                   </pre>
                 </div>
               )}
+
+              {/* ─── Coordinator Notes — ADD THIS BLOCK ─── */}
+              <NotesSection inquiry={detail} api={api} />
 
               {detail.events && detail.events.length > 0 && (
                 <div style={{ marginTop: "10px" }}>
@@ -1466,7 +1565,6 @@ export default function Inquiries() {
           onCancel={() => setShowQuoteModal(false)}
         />
       )} */}
-
       {/* Quote Modal */}
       {showQuoteModal && quoteTarget && (
         <Modal
@@ -1501,7 +1599,6 @@ export default function Inquiries() {
           onCancel={() => setShowQuoteModal(false)}
         />
       )}
-
       {/* Call Modal */}
       {showCallModal && callTarget && (
         <Modal
@@ -1519,9 +1616,8 @@ export default function Inquiries() {
           onCancel={() => setShowCallModal(false)}
         />
       )}
-
       {/* Close Modal */}
-      {showCloseModal && closeTarget && (
+      {/* {showCloseModal && closeTarget && (
         <Modal
           title="Close Inquiry"
           input={{
@@ -1536,6 +1632,205 @@ export default function Inquiries() {
             if (reason) handleAction("close", closeTarget.id, { reason });
           }}
           onCancel={() => setShowCloseModal(false)}
+        />
+      )} */}
+      {/* {showCloseModal && closeTarget && (
+        <Modal
+          title="Close Inquiry"
+          input={{
+            placeholder:
+              "e.g. duplicate request / requester deleted on WhatsApp / no response",
+            label: `Close #${closeTarget.id} as WITHDRAWN — reason:`,
+          }}
+          confirmText="Close as Withdrawn"
+          cancelText="Cancel"
+          danger={true}
+          onConfirm={(note) => {
+            setShowCloseModal(false);
+            if (note)
+              handleAction("close", closeTarget.id, {
+                reason: "withdrawn",
+                note,
+              });
+          }}
+          onCancel={() => setShowCloseModal(false)}
+        />
+      )} */}
+
+      {showCloseModal && closeTarget && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0,0,0,0.5)",
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            zIndex: 1000,
+          }}
+          onClick={() => setShowCloseModal(false)}
+        >
+          <div
+            className="card"
+            style={{ padding: "20px", width: "100%", maxWidth: "440px" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2
+              style={{
+                fontSize: "16px",
+                fontWeight: "700",
+                marginBottom: "14px",
+              }}
+            >
+              Close Inquiry #{closeTarget.id}
+            </h2>
+
+            <p
+              style={{
+                fontSize: "13px",
+                color: "var(--text-muted)",
+                marginBottom: "8px",
+              }}
+            >
+              Select outcome:
+            </p>
+            <div style={{ display: "flex", gap: "8px", marginBottom: "14px" }}>
+              <button
+                className={closeChoice === "won" ? "primary" : "secondary"}
+                style={{ flex: 1 }}
+                onClick={() => setCloseChoice("won")}
+              >
+                🏆 Won
+              </button>
+              <button
+                className={closeChoice === "lost" ? "primary" : "secondary"}
+                style={{ flex: 1 }}
+                onClick={() => setCloseChoice("lost")}
+              >
+                ❌ Lost
+              </button>
+              <button
+                className={
+                  closeChoice === "withdrawn" ? "primary" : "secondary"
+                }
+                style={{ flex: 1 }}
+                onClick={() => setCloseChoice("withdrawn")}
+              >
+                ↩️ Withdrawn
+              </button>
+            </div>
+
+            <p
+              style={{
+                fontSize: "13px",
+                color: "var(--text-muted)",
+                marginBottom: "8px",
+              }}
+            >
+              Reason:
+            </p>
+            <input
+              type="text"
+              value={closeNote}
+              onChange={(e) => setCloseNote(e.target.value)}
+              placeholder={
+                closeChoice === "withdrawn"
+                  ? "e.g. self rated / customer withdrew"
+                  : "e.g. lost to competitor on rate"
+              }
+              style={{
+                width: "100%",
+                padding: "8px 10px",
+                borderRadius: "4px",
+                border: "1px solid var(--border)",
+                background: "var(--bg, #fff)",
+                marginBottom: "16px",
+                fontSize: "14px",
+              }}
+            />
+
+            <div
+              style={{
+                display: "flex",
+                gap: "8px",
+                justifyContent: "flex-end",
+              }}
+            >
+              <button
+                className="secondary"
+                onClick={() => setShowCloseModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="primary"
+                disabled={!closeChoice}
+                onClick={() => {
+                  handleAction("close", closeTarget.id, {
+                    reason: closeChoice,
+                    note: closeNote.trim(),
+                  });
+                  setShowCloseModal(false);
+                  setCloseChoice("");
+                  setCloseNote("");
+                }}
+              >
+                Close Inquiry
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Modal */}
+      {/* {showDeleteModal && deleteTarget && (
+        <Modal
+          title="🗑 Delete Inquiry"
+          message={`Delete inquiry #${deleteTarget.id}? It will be removed from lists, dashboard and CSV reports. This can only be undone in the database.`}
+          confirmText="Delete"
+          cancelText="Cancel"
+          danger={true}
+          onConfirm={async () => {
+            setShowDeleteModal(false);
+            try {
+              await api.post(`/inquiries/${deleteTarget.id}/delete`, {});
+              showToast("🗑 Inquiry deleted");
+              fetchInquiries();
+            } catch {
+              showToast("❌ Delete failed", "error");
+            }
+          }}
+          onCancel={() => setShowDeleteModal(false)}
+        />
+      )} */}
+
+      {showDeleteModal && deleteTarget && (
+        <Modal
+          title="🗑 Delete Inquiry"
+          input={{
+            placeholder:
+              "e.g. duplicate request / requester deleted on WhatsApp",
+            label: `Reason for deleting #${deleteTarget.id} (recorded for audit):`,
+          }}
+          confirmText="Delete"
+          cancelText="Cancel"
+          danger={true}
+          onConfirm={(reason) => {
+            setShowDeleteModal(false);
+            if (reason) {
+              api
+                .post(`/inquiries/${deleteTarget.id}/delete`, { reason })
+                .then(() => {
+                  showToast("🗑 Inquiry deleted");
+                  fetchInquiries();
+                })
+                .catch(() => showToast("❌ Delete failed", "error"));
+            }
+          }}
+          onCancel={() => setShowDeleteModal(false)}
         />
       )}
 
@@ -1563,7 +1858,6 @@ export default function Inquiries() {
           onCancel={() => setShowBroadcastModal(false)}
         />
       )}
-
       {toast && (
         <div
           style={{

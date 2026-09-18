@@ -866,6 +866,28 @@ export default function Dashboard() {
   const [showBroadcastModal, setShowBroadcastModal] = useState(false);
   const [broadcastTarget, setBroadcastTarget] = useState(null);
 
+  // ─── Today-only lists (dashboard shows only today's) ───
+  const [todayLive, setTodayLive] = useState([]);
+  const [todayQuoted, setTodayQuoted] = useState([]);
+
+  const fetchTodayLists = async () => {
+    const today = new Date().toLocaleDateString("en-CA");
+    try {
+      const [live, quoted] = await Promise.all([
+        api.get("/inquiries", {
+          params: { status: "OPEN", startDate: today, endDate: today },
+        }),
+        api.get("/inquiries", {
+          params: { status: "QUOTED", startDate: today, endDate: today },
+        }),
+      ]);
+      setTodayLive(live.data);
+      setTodayQuoted(quoted.data);
+    } catch {
+      // keep previous data on failure
+    }
+  };
+
   const showToast = (message, type = "success") => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
@@ -893,8 +915,34 @@ export default function Dashboard() {
     }
   };
 
+  // useEffect(() => {
+  //   fetchStats();
+  //   fetchTodayLists();
+  //   api
+  //     .get("/pricing-team")
+  //     .then((res) => setPricingTeam(res.data))
+  //     .catch(() => {});
+  //   api
+  //     .get("/email-status")
+  //     .then((res) => setEmailStatus(res.data))
+  //     .catch(() => {});
+  //   // const interval = setInterval(fetchStats, 15000);
+  //   const interval = setInterval(() => {
+  //     fetchStats();
+  //     fetchTodayLists(); // ← ADD (midnight rollover handled:
+  //   }, 15000);
+  //   return () => clearInterval(interval);
+  // }, []);
+
+  // ─── Pause auto-refresh while interacting ───
+  const isInteracting =
+    detail || // detail modal open
+    showCallModal || // call modal open
+    showBroadcastModal; // broadcast modal open
+
   useEffect(() => {
     fetchStats();
+    fetchTodayLists();
     api
       .get("/pricing-team")
       .then((res) => setPricingTeam(res.data))
@@ -903,9 +951,14 @@ export default function Dashboard() {
       .get("/email-status")
       .then((res) => setEmailStatus(res.data))
       .catch(() => {});
-    const interval = setInterval(fetchStats, 15000);
+    const interval = setInterval(() => {
+      if (!isInteracting) {
+        fetchStats();
+        fetchTodayLists(); // midnight rollover still handled
+      }
+    }, 15000);
     return () => clearInterval(interval);
-  }, []);
+  }, [isInteracting]);
 
   // For the Selection of Reassigning the Pricer from dropdown
   const handleAction = async (action, id, payload = {}) => {
@@ -1172,7 +1225,8 @@ export default function Dashboard() {
           </span>
         </div>
 
-        {stats.open_inquiries.length === 0 ? (
+        {/* {stats.open_inquiries.length === 0 ? ( */}
+        {todayLive.length === 0 ? (
           <p style={{ padding: "20px", color: "var(--text-muted)" }}>
             No open inquiries right now. 🎉
           </p>
@@ -1192,7 +1246,8 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody>
-                {stats.open_inquiries.map((inq) => {
+                {/* {stats.open_inquiries.map((inq) => { */}
+                {todayLive.map((inq) => {
                   const isRed = inq.age_minutes >= stats.red_minutes;
                   const isAmber = inq.age_minutes >= stats.amber_minutes;
 
@@ -1450,7 +1505,8 @@ export default function Dashboard() {
           </h2>
         </div>
 
-        {stats.recent_quoted.length === 0 ? (
+        {/* {stats.recent_quoted.length === 0 ? ( */}
+        {todayQuoted.length === 0 ? (
           <p style={{ padding: "20px", color: "var(--text-muted)" }}>
             No inquiries quoted yet.
           </p>
@@ -1470,7 +1526,8 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody>
-                {stats.recent_quoted.map((inq) => (
+                {/* {stats.recent_quoted.map((inq) => ( */}
+                {todayQuoted.map((inq) => (
                   <tr key={inq.id}>
                     <td>#{inq.id}</td>
                     <td>{inq.requester || "Unknown"}</td>
