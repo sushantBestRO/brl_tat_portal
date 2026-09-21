@@ -954,12 +954,6 @@ export default function Inquiries() {
                   return (
                     <tr key={inq.id}>
                       <td onClick={() => fetchDetail(inq.id)}>#{inq.id}</td>
-                      <td
-                        title={inq.close_reason}
-                        onClick={() => fetchDetail(inq.id)}
-                      >
-                        {inq.close_reason}
-                      </td>
 
                       <td onClick={() => fetchDetail(inq.id)}>
                         {inq.requester || "Unknown"}
