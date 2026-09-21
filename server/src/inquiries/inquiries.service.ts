@@ -73,7 +73,7 @@ export class InquiriesService {
       tat,
       followups: inq.followupCount || 0,
       reminders: inq.reminderCount || 0,
-      close_reason: inq.closeReason || '',
+      close_reason: inq.closeReason,
     };
   }
 
@@ -1384,6 +1384,7 @@ export class InquiriesService {
 
       return {
         id: inq.id,
+        close_reason: inq.closeReason,
         requester: inq.requesterName || inq.requesterKey,
         lane: inq.lane,
         vehicle_type: inq.vehicleType || '',

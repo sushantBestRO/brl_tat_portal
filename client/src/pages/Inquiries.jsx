@@ -861,12 +861,13 @@ export default function Inquiries() {
           return;
       }
       await api.post(endpoint, payload);
-      await fetchInquiries();
+      fetchInquiries();
       if (selectedInquiry === id) await fetchDetail(id);
     } catch (err) {
       setError(
         `Action failed: ${err.response?.data?.message || "Unknown error"}`,
       );
+      fetchInquiries();
     }
   };
 
@@ -953,6 +954,13 @@ export default function Inquiries() {
                   return (
                     <tr key={inq.id}>
                       <td onClick={() => fetchDetail(inq.id)}>#{inq.id}</td>
+                      <td
+                        title={inq.close_reason}
+                        onClick={() => fetchDetail(inq.id)}
+                      >
+                        {inq.close_reason}
+                      </td>
+
                       <td onClick={() => fetchDetail(inq.id)}>
                         {inq.requester || "Unknown"}
                       </td>
@@ -1010,8 +1018,22 @@ export default function Inquiries() {
                           }
                           onChange={(e) => {
                             const value = e.target.value;
+                            const key = value === "NONE" ? null : value;
+
+                            // ─── Optimistic: show instantly, don't wait ───
+                            setInquiries((prev) =>
+                              prev.map((i) =>
+                                i.id === inq.id
+                                  ? { ...i, assigned_to_key: key }
+                                  : i,
+                              ),
+                            );
+
+                            // handleAction("reassign", inq.id, {
+                            //   assignee_key: value === "NONE" ? null : value,
+                            // });
                             handleAction("reassign", inq.id, {
-                              assignee_key: value === "NONE" ? null : value,
+                              assignee_key: key,
                             });
                           }}
                           style={{
@@ -1203,6 +1225,10 @@ export default function Inquiries() {
                 >
                   {detail.status.replace("_", " ")}
                 </span>
+              </div>
+              <div>
+                <strong>Close Reason:</strong>
+                {detail.close_reason}
               </div>
               <div>
                 <strong>Requester:</strong> {detail.requester}

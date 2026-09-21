@@ -1289,7 +1289,7 @@ export default function Dashboard() {
                         {inq.vehicle_type || "-"}
                       </td>
 
-                      <td onClick={(e) => e.stopPropagation()}>
+                      {/* <td onClick={(e) => e.stopPropagation()}>
                         <select
                           value={
                             inq.assigned_to_key
@@ -1300,6 +1300,50 @@ export default function Dashboard() {
                             const value = e.target.value;
                             handleAction("reassign", inq.id, {
                               assignee_key: value === "NONE" ? null : value,
+                            });
+                          }}
+                          style={{
+                            padding: "4px 8px",
+                            borderRadius: "4px",
+                            border: "1px solid var(--border)",
+                            background: "var(--bg, #fff)",
+                            fontSize: "13px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <option value="" disabled>
+                            Select...
+                          </option>
+                          <option value="NONE">None</option>
+                          {pricingTeam.map((p) => (
+                            <option key={p.phone} value={p.phone}>
+                              {p.name}
+                            </option>
+                          ))}
+                        </select>
+                      </td> */}
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <select
+                          value={
+                            inq.assigned_to_key
+                              ? inq.assigned_to_key.replace(/^91/, "")
+                              : ""
+                          }
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            const key = value === "NONE" ? null : value;
+
+                            // ─── Optimistic: reflect the choice instantly ───
+                            setInquiries((prev) =>
+                              prev.map((i) =>
+                                i.id === inq.id
+                                  ? { ...i, assigned_to_key: key }
+                                  : i,
+                              ),
+                            );
+
+                            handleAction("reassign", inq.id, {
+                              assignee_key: key,
                             });
                           }}
                           style={{
@@ -1646,6 +1690,9 @@ export default function Dashboard() {
                 >
                   {detail.status.replace("_", " ")}
                 </span>
+              </div>
+              <div>
+                <strong>Close Reason:</strong> {detail.close_reason}
               </div>
               <div>
                 <strong>Requester:</strong> {detail.requester}
