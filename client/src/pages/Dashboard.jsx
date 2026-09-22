@@ -853,6 +853,7 @@ export default function Dashboard() {
   const [error, setError] = useState("");
   const [pricingTeam, setPricingTeam] = useState([]);
   const [detail, setDetail] = useState(null);
+
   const navigate = useNavigate();
   // ─── Email quota status ───
   const [emailStatus, setEmailStatus] = useState(null);
@@ -1334,7 +1335,7 @@ export default function Dashboard() {
                             const key = value === "NONE" ? null : value;
 
                             // ─── Optimistic: reflect the choice instantly ───
-                            setInquiries((prev) =>
+                            setTodayLive((prev) =>
                               prev.map((i) =>
                                 i.id === inq.id
                                   ? { ...i, assigned_to_key: key }

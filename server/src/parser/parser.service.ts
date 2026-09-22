@@ -1167,10 +1167,25 @@ export class ParserService {
     lane = lane.replace(/[.,;]+$/, '').trim();
 
     // ─── Keep long destinations readable: first segment + pincode ───
-    if (lane.length > 40) {
-      const pin = lane.match(/\b\d{6}\b/)?.[0] || '';
-      const base = lane.split(/[;,]/)[0].slice(0, 34).trim();
-      lane = pin ? `${base} (${pin})` : base;
+    // ─── Keep long addresses readable — but NEVER drop the destination ───
+    const pinOf = (s: string) => {
+      // handles both "410501" and spaced "502 319"
+      const m = s.match(/\b(\d{3}\s?\d{3})\b/);
+      return m ? m[1].replace(/\s+/g, '') : '';
+    };
+    const shorten = (part: string): string => {
+      if (part.length <= 40) return part;
+      const pin = pinOf(part);
+      const base = part.split(/[;,]/)[0].slice(0, 34).trim();
+      return pin ? `${base} (${pin})` : base;
+    };
+    const toMatch = lane.match(/\s+to\s+/i);
+    if (toMatch && toMatch.index !== undefined) {
+      const fromPart = lane.slice(0, toMatch.index).trim();
+      const toPart = lane.slice(toMatch.index + toMatch[0].length).trim();
+      lane = `${shorten(fromPart)} TO ${shorten(toPart)}`;
+    } else if (lane.length > 40) {
+      lane = shorten(lane);
     }
 
     // ─── ADD THIS LINE: Standardize before returning ───
@@ -1348,108 +1363,6 @@ export class ParserService {
     return unique.join(' | ').slice(0, 300);
   }
 
-  // ─── Helper: extract spec (weight, dimensions) ───
-  // specOf(body: string): string {
-  //   if (!body) return '';
-
-  //   const lines = body
-  //     .split('\n')
-  //     .map((l) => l.trim())
-  //     .filter(Boolean);
-  //   const results: string[] = [];
-
-  //   for (const line of lines) {
-  //     // Skip addresses
-  //     if (/\b\d{6}\b/.test(line)) continue;
-  //     if (/\b(no\.|dist|apmc|india|pin|block|sector|plot|road)\b/i.test(line))
-  //       continue;
-
-  //     // Must contain weight or spec patterns
-  //     const hasWeight = /\bweight\b/i.test(line);
-  //     const hasKg = /\b\d+\s*kg\b/i.test(line);
-  //     const hasMt =
-  //       /\b\d+\s*\.?\s*m\.?t\b/i.test(line) || /\b\d+\s*MT\b/i.test(line);
-  //     const hasTon = /\b\d+\s*(tn|ton|tons)\b/i.test(line);
-
-  //     if (!hasWeight && !hasKg && !hasMt && !hasTon) continue;
-
-  //     let segment = line;
-
-  //     // If the lane is mixed in, cut from where specs start
-  //     const specStartMatch = segment.match(
-  //       /\bweight\b|\b\d+\s*(?:kg|mt|tn|ton)/i,
-  //     );
-  //     if (
-  //       specStartMatch &&
-  //       specStartMatch.index !== undefined &&
-  //       specStartMatch.index > 5
-  //     ) {
-  //       const beforeSpec = segment.slice(0, specStartMatch.index);
-  //       if (/\bto\b/i.test(beforeSpec)) {
-  //         segment = segment.slice(specStartMatch.index);
-  //       }
-  //     }
-
-  //     // Cut off trailing route names
-  //     const routeMatch = segment.match(
-  //       /\s+(?:to|from)\s+|\s+empty\s*[,;]?\s*back\b|\s+loaded\s*back\b/i,
-  //     );
-  //     if (routeMatch && routeMatch.index !== undefined) {
-  //       segment = segment.slice(0, routeMatch.index);
-  //     }
-
-  //     // Extract only weight-related tokens
-  //     const tokens = segment.trim().split(/\s+/);
-  //     const specTokens: string[] = [];
-  //     let foundWeight = false;
-
-  //     for (const tok of tokens) {
-  //       const upper = tok.toUpperCase().replace(/[^A-Z+.]/g, '');
-
-  //       if (/\bweight\b/i.test(tok) || /\bwt\b/i.test(tok)) {
-  //         foundWeight = true;
-  //         specTokens.push('weight');
-  //         continue;
-  //       }
-
-  //       // Route words — stop
-  //       if (/\b(to|from|back|empty|loaded)\b/i.test(tok)) break;
-
-  //       // Skip "plz", "place", "please"
-  //       if (/\b(plz|place|please|pls)\b/i.test(tok)) continue;
-
-  //       if (foundWeight || /\d/.test(tok)) {
-  //         // Skip container dimensions like "10'n", "40'", "20X39" — not weight
-  //         if (/\d+\s*[xX]\s*\d+/.test(tok) || /\d+'/.test(tok)) continue;
-  //         // Skip phone numbers
-  //         if (/^\+?\d{10,}$/.test(tok.replace(/[\s-]/g, ''))) continue;
-  //         if (tok.startsWith('+91')) continue;
-  //         if (/\d/.test(tok)) {
-  //           specTokens.push(tok);
-  //         } else if (['KG', 'MT', 'TN', 'TON', 'TONS', '+C'].includes(upper)) {
-  //           specTokens.push(upper);
-  //         }
-  //       }
-  //     }
-
-  //     // If no "weight" keyword but has kg/mt, build from there
-  //     if (specTokens.length === 0) {
-  //       for (const tok of tokens) {
-  //         if (/\d/.test(tok) || /\b(kg|mt|tn|ton)\b/i.test(tok)) {
-  //           specTokens.push(tok);
-  //         }
-  //       }
-  //     }
-
-  //     const specStr = this.cleanSpecText(specTokens.join(' '));
-  //     if (specStr.length >= 3) {
-  //       results.push(specStr.slice(0, 120));
-  //     }
-  //   }
-
-  //   const unique = [...new Set(results)];
-  //   return unique.join(' | ').slice(0, 300);
-  // }
   // ─── Helper: extract spec (weight, dimensions) ───
   specOf(body: string): string {
     if (!body) return '';
