@@ -34,13 +34,15 @@ export class AdminController {
   // Hides them from the dashboard, but they're still in the database.
   @Post('soft-delete')
   async softDelete() {
-    const nMsg = await this.messageRepo.createQueryBuilder()
+    const nMsg = await this.messageRepo
+      .createQueryBuilder()
       .update()
       .set({ archived: true })
       .where('archived = false')
       .execute();
 
-    const nInq = await this.inquiryRepo.createQueryBuilder()
+    const nInq = await this.inquiryRepo
+      .createQueryBuilder()
       .update()
       .set({ archived: true })
       .where('archived = false')
@@ -55,13 +57,15 @@ export class AdminController {
   // ─── Recover Archived: Bring soft-deleted data back ───
   @Post('recover-archived')
   async recoverArchived() {
-    const nMsg = await this.messageRepo.createQueryBuilder()
+    const nMsg = await this.messageRepo
+      .createQueryBuilder()
       .update()
       .set({ archived: false })
       .where('archived = true')
       .execute();
 
-    const nInq = await this.inquiryRepo.createQueryBuilder()
+    const nInq = await this.inquiryRepo
+      .createQueryBuilder()
       .update()
       .set({ archived: false })
       .where('archived = true')
@@ -78,10 +82,13 @@ export class AdminController {
   @Post('hard-delete/request-otp')
   async requestOtp() {
     // Invalidate any earlier unused codes
-    await this.otpRepo.createQueryBuilder()
+    await this.otpRepo
+      .createQueryBuilder()
       .update()
       .set({ used: true })
-      .where('purpose = :p AND used = false', { p: this.HARD_DELETE_OTP_PURPOSE })
+      .where('purpose = :p AND used = false', {
+        p: this.HARD_DELETE_OTP_PURPOSE,
+      })
       .execute();
 
     // Generate 6-digit code
@@ -101,9 +108,9 @@ export class AdminController {
       this.HARD_DELETE_OTP_EMAIL,
       'BRL TAT Portal — hard delete confirmation code',
       `A hard delete of ALL portal data was requested.\n\n` +
-      `Confirmation code: ${code}\n\n` +
-      `This code expires in ${this.TTL_MINUTES} minutes.\n` +
-      `If you did not request this, ignore this email — the code will simply expire and nothing will be deleted.`,
+        `Confirmation code: ${code}\n\n` +
+        `This code expires in ${this.TTL_MINUTES} minutes.\n` +
+        `If you did not request this, ignore this email — the code will simply expire and nothing will be deleted.`,
     );
 
     return {
@@ -156,8 +163,50 @@ export class AdminController {
       deleted_messages: nMsg,
     };
   }
-}
 
+  // ─── Repair statuses clobbered by the old group-switch archive ───
+  // Inquiries showing WITHDRAWN with NO close event were flattened by
+  // the raw UPDATE — restore their real status from their own data.
+  // dry=true shows what WOULD change without changing it. ───
+  @Post('repair-switched-statuses')
+  async repairSwitchedStatuses(@Body() body: { dry?: boolean }) {
+    const clobbered = await this.inquiryRepo.find({
+      where: { status: 'WITHDRAWN' },
+    });
+
+    const details: any[] = [];
+    for (const inq of clobbered) {
+      // a genuine coordinator close leaves an event; raw updates don't
+      const closeEvent = await this.eventRepo.findOne({
+        where: { inquiryId: inq.id, kind: 'STATUS_CHANGE' },
+      });
+      if (closeEvent) continue; // genuinely closed — leave it
+
+      let restored: string;
+      if (inq.closeReason === 'won') restored = 'CLOSED_WON';
+      else if (inq.closeReason === 'lost') restored = 'CLOSED_LOST';
+      else if (inq.quotedAt && inq.quotedRates) restored = 'QUOTED';
+      else restored = 'OPEN';
+
+      details.push({
+        id: inq.id,
+        lane: inq.lane,
+        from: 'WITHDRAWN',
+        to: restored,
+      });
+
+      if (!body.dry) {
+        inq.status = restored;
+        await this.inquiryRepo.save(inq);
+      }
+    }
+    return {
+      mode: body.dry ? 'DRY RUN (nothing changed)' : 'APPLIED',
+      repaired: details.length,
+      details,
+    };
+  }
+}
 
 // Soft Delete vs Hard Delete
 // Soft Delete sets archived = true on all messages and inquiries. They disappear from the dashboard, scorecard, and exports, but they're still physically in the database. A DB admin could flip the flags back. This is the safe, reversible option.
@@ -168,4 +217,3 @@ export class AdminController {
 // Confirm OTP — checks that the code matches, is unused, and hasn't expired. Only then does it delete everything.
 // What's preserved during hard delete?
 // Team roster (pricing_team), settings (settings), classification phrases (classification_phrases), and OTP challenges are NOT deleted. Only captured data (messages, inquiries, events) is wiped.
-

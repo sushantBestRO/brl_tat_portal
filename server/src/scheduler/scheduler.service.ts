@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThan, Not } from 'typeorm';
@@ -12,7 +12,7 @@ import { ParserService } from 'src/parser/parser.service';
 import { MatcherService } from 'src/matcher/matcher.service';
 
 @Injectable()
-export class SchedulerService {
+export class SchedulerService implements OnModuleInit {
   private readonly logger = new Logger(SchedulerService.name);
   // Add this at the top of the class, after the logger line
   private lastPollStatus: {
@@ -27,6 +27,30 @@ export class SchedulerService {
 
   getConnectionStatus() {
     return this.lastPollStatus;
+  }
+
+  // ─── NEW: consecutive failed polls — drives the recovery catch-up ───
+  private pollFailureStreak = 0;
+
+  // ─── NEW: Startup sweep — re-classify stored-but-unclassified messages
+  // from the last 48h (recovers messages trapped between "saved" and
+  // "classified" by a restart/crash — their inquiries were never created).
+  // Runs 5s after boot so it doesn't block startup. ───
+  onModuleInit() {
+    setTimeout(() => {
+      this.startupSweep().catch(() => {});
+    }, 5000);
+  }
+
+  private async startupSweep() {
+    try {
+      const res = await this.ingest.reclassifyMessages(2);
+      this.logger.log(
+        `[Startup Sweep] checked=${res.checked}, changed=${res.changed}`,
+      );
+    } catch (err: any) {
+      this.logger.error(`[Startup Sweep] failed: ${err.message}`);
+    }
   }
 
   constructor(
@@ -524,435 +548,421 @@ export class SchedulerService {
       return;
     }
 
+    // try {
+    //   const url = `https://api.maytapi.com/api/${productId}/${phoneId}/getMessages/${groupKey}?page=1&limit=100`;
+
+    // ─── NEW: after a failed poll, fetch 3 pages so outages self-heal ───
+    const pages = this.pollFailureStreak > 0 ? 3 : 1;
+
     try {
-      const url = `https://api.maytapi.com/api/${productId}/${phoneId}/getMessages/${groupKey}?page=1&limit=100`;
+      let totalNew = 0;
 
-      const resp = await fetch(url, {
-        method: 'GET',
-        headers: { 'x-maytapi-key': apiKey },
-      });
+      for (let page = 1; page <= pages; page++) {
+        const url = `https://api.maytapi.com/api/${productId}/${phoneId}/getMessages/${groupKey}?page=${page}&limit=100`;
 
-      const data = await resp.json().catch(async () => {
-        const text = await resp.text();
-        this.logger.error(
-          `[Maytapi Poll] Non-JSON response (status ${resp.status}): ${text.slice(0, 300)}`,
-        );
-        return null;
-      });
+        const resp = await fetch(url, {
+          method: 'GET',
+          headers: { 'x-maytapi-key': apiKey },
+        });
 
-      if (!data) return;
+        // const data = await resp.json().catch(async () => {
+        //   const text = await resp.text();
+        //   this.logger.error(
+        //     `[Maytapi Poll] Non-JSON response (status ${resp.status}): ${text.slice(0, 300)}`,
+        //   );
+        //   return null;
+        // });
 
-      if (data.success === false) {
-        this.logger.error(
-          `[Maytapi Poll] Maytapi returned error: ${JSON.stringify(data)}`,
-        );
-        this.lastPollStatus = {
-          connected: false,
-          lastChecked: new Date(),
-          lastError: data.message || 'Maytapi returned error',
-        };
-      } else {
-        this.logger.log(
-          `[Maytapi Poll] Response: success=${data.success}, messages=${data?.data?.messages?.length || 0}`,
-        );
-        this.lastPollStatus = {
-          connected: true,
-          lastChecked: new Date(),
-          lastError: null,
-        };
-      }
-
-      const messages = data?.data?.messages || [];
-      const users = data?.data?.users || {};
-
-      let newCount = 0;
-      for (const m of messages) {
-        // Skip messages sent by us (fromMe = true)
-        if (m.fromMe) {
-          continue;
+        // ─── FIX: read the body ONCE. The old pattern threw
+        // "Body is unusable: Body has already been read" and killed the poll. ───
+        const rawText = await resp.text();
+        let data: any = null;
+        try {
+          data = JSON.parse(rawText);
+        } catch {
+          this.logger.error(
+            `[Maytapi Poll] Non-JSON response (status ${resp.status}): ${rawText.slice(0, 300)}`,
+          );
+          this.lastPollStatus = {
+            connected: false,
+            lastChecked: new Date(),
+            lastError: 'Non-JSON response',
+          };
+          return;
         }
 
-        // ─── FIX: Resolve sender name properly ───
-        const senderUid = m.uid || '';
-        let senderName: string | null = null;
-        let senderKey: string = '';
-
-        if (senderUid && !senderUid.includes('g.us')) {
-          senderKey = senderUid.split('@')[0] || '';
-          senderName = m.pushname || m.sender_name || m.name || null;
-          if (!senderName) {
-            senderName = users[senderUid]?.name || null;
-          }
-          if (!senderName && senderKey) {
-            senderName = senderKey;
-          }
+        if (data.success === false) {
+          this.logger.error(
+            `[Maytapi Poll] Maytapi returned error: ${JSON.stringify(data)}`,
+          );
+          this.lastPollStatus = {
+            connected: false,
+            lastChecked: new Date(),
+            lastError: data.message || 'Maytapi returned error',
+          };
         } else {
-          senderName = m.pushname || m.sender_name || m.name || null;
-          senderKey = (m.phone || m.sender_phone || '').replace(/\D/g, '');
-          if (!senderName && senderKey) {
-            senderName = senderKey;
-          }
-        }
-
-        if (!senderKey) {
-          this.logger.log(`[Maytapi Poll] Skipping: could not resolve sender`);
-          continue;
-        }
-
-        const oneHourAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-        const msgTime = new Date(parseInt(m.timestamp) * 1000);
-
-        if (msgTime.getTime() < oneHourAgo) {
-          continue;
-        }
-
-        // const body = m.message?.text || m.message?.caption || '';
-        let body = m.message?.text || m.message?.caption || '';
-
-        // ─── Strip @mentions from caption — they're not inquiry text ───
-        if (body) {
-          const stripped = body
-            .replace(/@\d+/g, '') // Remove @mentions like @35133352591429
-            .replace(/@\w+/g, '') // Remove @mentions like @username
-            .trim();
-
-          // // If caption was ONLY mentions (no real text), treat as no caption
-          // if (!stripped) {
-          //   body = '';
-          // } else {
-          //   body = stripped;
-          // }
-
-          if (!stripped) {
-            body = '';
-          } else {
-            // ─── Check if caption is just a label/command (not inquiry text) ───
-            const labelPhrases = [
-              'share rate',
-              'share rates',
-              'rate',
-              'rates',
-              'export rate',
-              'import rate',
-              'pls share rate',
-              'please share rate',
-              'quote',
-              'pls quote',
-              'best rate',
-              'rate?',
-              'rate please',
-            ];
-            const normalized = stripped.toLowerCase().replace(/[.!]+$/, '');
-            if (labelPhrases.includes(normalized)) {
-              body = ''; // Label-only caption → treat as no caption
-            } else {
-              body = stripped;
-            }
-          }
-        }
-
-        // ─── DETECT IMAGE MESSAGES ───
-        const hasImage =
-          m.message?.type === 'image' ||
-          m.type === 'image' ||
-          !!m.message?.image?.url ||
-          !!m.message?.image ||
-          (m.message?.mime_type || '').startsWith('image/');
-
-        const imageUrl =
-          m.message?.url || // ← Maytapi puts it here!
-          m.message?.image?.url ||
-          m.message?.image?.link ||
-          m.message?.link ||
-          m.message?.file?.url ||
-          null;
-
-        // // ─── DEBUG: Log the full message structure for image messages ───
-        // // ─── DEBUG: Log the full message structure for image messages ───
-        // if (hasImage) {
-        //   this.logger.log(
-        //     `[Maytapi Poll] IMAGE DEBUG message: ${JSON.stringify(m.message).slice(0, 1000)}`,
-        //   );
-        //   this.logger.log(
-        //     `[Maytapi Poll] IMAGE DEBUG full: ${JSON.stringify(m).slice(0, 1000)}`,
-        //   );
-        // }
-
-        // ─── Verbose payload dump — only when explicitly enabled ───
-        // Full message/user payloads include phone-derived IDs, names, and
-        // image URLs. Fine for active debugging, not something that should
-        // sit in production log files by default.
-        if (hasImage && process.env.DEBUG_VERBOSE_LOGGING === 'true') {
           this.logger.log(
-            `[Maytapi Poll] IMAGE DEBUG message: ${JSON.stringify(m.message).slice(0, 1000)}`,
+            `[Maytapi Poll] Response: success=${data.success}, messages=${data?.data?.messages?.length || 0}`,
           );
-          this.logger.log(
-            `[Maytapi Poll] IMAGE DEBUG full: ${JSON.stringify(m).slice(0, 1000)}`,
-          );
+          this.lastPollStatus = {
+            connected: true,
+            lastChecked: new Date(),
+            lastError: null,
+          };
         }
 
-        // Skip only if no text AND no image
-        if (!body && !hasImage) {
-          this.logger.log(`[Maytapi Poll] Skipping: empty body and no image`);
-          continue;
-        }
+        const messages = data?.data?.messages || [];
+        const users = data?.data?.users || {};
 
-        const waId = m.message?.id || undefined;
-
-        // Extract quoted message (WhatsApp reply feature)
-        const quotedMsg = m.message?.quoted || m.quotedMsg || null;
-        const quotedText =
-          quotedMsg?.text ||
-          quotedMsg?.caption ||
-          quotedMsg?.message?.text ||
-          null;
-        const quotedWaId = quotedMsg?.id || null;
-
-        // ─── EDIT DETECTION: if an existing message's content changed, re-process ───
-        // if (!hasImage && waId) {
-        //   const existingMsg = await this.messageRepo.findOne({
-        //     where: { waMessageId: waId },
-        //   });
-
-        //   if (existingMsg && existingMsg.body && existingMsg.body !== body) {
-        //     this.logger.log(
-        //       `[Maytapi Poll] ✏️ Edited message from ${senderName}: "${existingMsg.body.slice(0, 50)}" → "${body.slice(0, 50)}"`,
-        //     );
-
-        //     // Update stored body
-        //     const oldBody = existingMsg.body;
-        //     existingMsg.body = body;
-        //     await this.messageRepo.save(existingMsg);
-
-        //     // Re-process if sender is a pricer and new body has a rate
-        //     const pricerPhone = this.config.pricerPhoneFor(
-        //       senderKey,
-        //       senderName,
-        //     );
-        //     if (pricerPhone) {
-        //       const editedReply = this.parser.parseRateReply(body);
-        //       if (editedReply) {
-        //         await this.matcher.handlePricerMessage(
-        //           existingMsg,
-        //           editedReply,
-        //         );
-        //         this.logger.log(
-        //           `[Maytapi Poll] ✏️ Edited rate re-processed → new rate: ${editedReply.rates.join(', ')}`,
-        //         );
-        //       }
-        //     } else {
-        //       this.logger.log(
-        //         `[Maytapi Poll] ✏️ Edited message was not from a pricer — body updated only`,
-        //       );
-        //     }
-        //     continue; // Don't double-process below
-        //   }
-        // }
-
-        // ─── EDIT DETECTION: if an existing message's content changed, re-process ───
-        if (!hasImage && waId) {
-          const existingMsg = await this.messageRepo.findOne({
-            where: { waMessageId: waId },
-          });
-
-          if (existingMsg && existingMsg.body && existingMsg.body !== body) {
-            this.logger.log(
-              `[Maytapi Poll] ✏️ Edited message from ${senderName}: "${existingMsg.body.slice(0, 50)}" → "${body.slice(0, 50)}"`,
-            );
-
-            existingMsg.body = body;
-            await this.messageRepo.save(existingMsg);
-
-            const pricerPhone = this.config.pricerPhoneFor(
-              senderKey,
-              senderName,
-            );
-            if (pricerPhone) {
-              const editedReply = this.parser.parseRateReply(body);
-              if (editedReply) {
-                await this.matcher.handlePricerMessage(
-                  existingMsg,
-                  editedReply,
-                );
-                this.logger.log(
-                  `[Maytapi Poll] ✏️ Edited rate re-processed → new rate: ${editedReply.rates.join(', ')}`,
-                );
-              }
-            }
+        let newCount = 0;
+        for (const m of messages) {
+          // Skip messages sent by us (fromMe = true)
+          if (m.fromMe) {
             continue;
           }
-        }
 
-        // // ─── If it's an image message, save it and create placeholder inquiry ───
-        // if (hasImage && !body) {
-        //   this.logger.log(
-        //     `[Maytapi Poll] Image message detected from ${senderName}`,
-        //   );
+          // ─── FIX: Resolve sender name properly ───
+          const senderUid = m.uid || '';
+          let senderName: string | null = null;
+          let senderKey: string = '';
 
-        //   const placeholderBody = m.message?.caption || '[IMAGE INQUIRY]';
+          if (senderUid && !senderUid.includes('g.us')) {
+            senderKey = senderUid.split('@')[0] || '';
+            senderName = m.pushname || m.sender_name || m.name || null;
+            if (!senderName) {
+              senderName = users[senderUid]?.name || null;
+            }
+            if (!senderName && senderKey) {
+              senderName = senderKey;
+            }
+          } else {
+            senderName = m.pushname || m.sender_name || m.name || null;
+            senderKey = (m.phone || m.sender_phone || '').replace(/\D/g, '');
+            if (!senderName && senderKey) {
+              senderName = senderKey;
+            }
+          }
 
-        //   const result = await this.ingest.ingestMessage({
-        //     groupKey: groupKey,
-        //     senderKey: senderKey,
-        //     senderName: senderName || undefined,
-        //     body: placeholderBody,
-        //     postedAt: msgTime,
-        //     waMessageId: waId,
-        //     source: 'maytapi',
-        //     quotedText: quotedText,
-        //     quotedWaId: quotedWaId,
-        //   });
-
-        //   if (result) {
-        //     newCount++;
-        //     this.logger.log(
-        //       `[Maytapi Poll] Image message ingested as placeholder inquiry`,
-        //     );
-
-        //     // ─── Run OCR in background (don't block the poll loop) ───
-        //     if (imageUrl) {
-        //       this.runOcrInBackground(
-        //         imageUrl,
-        //         result.id,
-        //         groupKey,
-        //         senderKey,
-        //         senderName,
-        //         msgTime,
-        //         waId,
-        //       ).catch((err) => {
-        //         this.logger.error(
-        //           `[Maytapi Poll] OCR background error: ${err.message}`,
-        //         );
-        //       });
-        //     }
-        //   }
-        //   continue; // Skip normal text processing for this message
-        // }
-
-        // ─── If it's an image WITHOUT caption → placeholder inquiry + OCR ───
-        if (hasImage && !body) {
-          this.logger.log(
-            `[Maytapi Poll] Image message detected from ${senderName}`,
-          );
-
-          const placeholderBody = '[IMAGE INQUIRY]';
-
-          // Try to ingest — if it's a duplicate, we still need to check if it has an inquiry
-          const result = await this.ingest.ingestMessage({
-            groupKey: groupKey,
-            senderKey: senderKey,
-            senderName: senderName || undefined,
-            body: placeholderBody,
-            postedAt: msgTime,
-            waMessageId: waId,
-            source: 'maytapi',
-            quotedText: quotedText,
-            quotedWaId: quotedWaId,
-          });
-
-          let msgId: number | null = null;
-
-          if (result) {
-            // New message → use its ID
-            msgId = result.id;
-            newCount++;
+          if (!senderKey) {
             this.logger.log(
-              `[Maytapi Poll] Image message ingested as placeholder inquiry`,
+              `[Maytapi Poll] Skipping: could not resolve sender`,
             );
-          } else if (waId) {
-            // Duplicate message → check if it already has an inquiry
+            continue;
+          }
+
+          const oneHourAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+          const msgTime = new Date(parseInt(m.timestamp) * 1000);
+
+          if (msgTime.getTime() < oneHourAgo) {
+            continue;
+          }
+
+          // const body = m.message?.text || m.message?.caption || '';
+          let body = m.message?.text || m.message?.caption || '';
+
+          // ─── Strip @mentions from caption — they're not inquiry text ───
+          if (body) {
+            const stripped = body
+              .replace(/@\d+/g, '') // Remove @mentions like @35133352591429
+              .replace(/@\w+/g, '') // Remove @mentions like @username
+              .trim();
+
+            // // If caption was ONLY mentions (no real text), treat as no caption
+            // if (!stripped) {
+            //   body = '';
+            // } else {
+            //   body = stripped;
+            // }
+
+            if (!stripped) {
+              body = '';
+            } else {
+              // ─── Check if caption is just a label/command (not inquiry text) ───
+              const labelPhrases = [
+                'share rate',
+                'share rates',
+                'rate',
+                'rates',
+                'export rate',
+                'import rate',
+                'pls share rate',
+                'please share rate',
+                'quote',
+                'pls quote',
+                'best rate',
+                'rate?',
+                'rate please',
+              ];
+              const normalized = stripped.toLowerCase().replace(/[.!]+$/, '');
+              if (labelPhrases.includes(normalized)) {
+                body = ''; // Label-only caption → treat as no caption
+              } else {
+                body = stripped;
+              }
+            }
+          }
+
+          // ─── DETECT IMAGE MESSAGES ───
+          const hasImage =
+            m.message?.type === 'image' ||
+            m.type === 'image' ||
+            !!m.message?.image?.url ||
+            !!m.message?.image ||
+            (m.message?.mime_type || '').startsWith('image/');
+
+          const imageUrl =
+            m.message?.url || // ← Maytapi puts it here!
+            m.message?.image?.url ||
+            m.message?.image?.link ||
+            m.message?.link ||
+            m.message?.file?.url ||
+            null;
+
+          // // ─── DEBUG: Log the full message structure for image messages ───
+          // // ─── DEBUG: Log the full message structure for image messages ───
+          // if (hasImage) {
+          //   this.logger.log(
+          //     `[Maytapi Poll] IMAGE DEBUG message: ${JSON.stringify(m.message).slice(0, 1000)}`,
+          //   );
+          //   this.logger.log(
+          //     `[Maytapi Poll] IMAGE DEBUG full: ${JSON.stringify(m).slice(0, 1000)}`,
+          //   );
+          // }
+
+          // ─── Verbose payload dump — only when explicitly enabled ───
+          // Full message/user payloads include phone-derived IDs, names, and
+          // image URLs. Fine for active debugging, not something that should
+          // sit in production log files by default.
+          if (hasImage && process.env.DEBUG_VERBOSE_LOGGING === 'true') {
+            this.logger.log(
+              `[Maytapi Poll] IMAGE DEBUG message: ${JSON.stringify(m.message).slice(0, 1000)}`,
+            );
+            this.logger.log(
+              `[Maytapi Poll] IMAGE DEBUG full: ${JSON.stringify(m).slice(0, 1000)}`,
+            );
+          }
+
+          // Skip only if no text AND no image
+          if (!body && !hasImage) {
+            this.logger.log(`[Maytapi Poll] Skipping: empty body and no image`);
+            continue;
+          }
+
+          const waId = m.message?.id || undefined;
+
+          // Extract quoted message (WhatsApp reply feature)
+          const quotedMsg = m.message?.quoted || m.quotedMsg || null;
+          const quotedText =
+            quotedMsg?.text ||
+            quotedMsg?.caption ||
+            quotedMsg?.message?.text ||
+            null;
+          const quotedWaId = quotedMsg?.id || null;
+
+          // ─── EDIT DETECTION: if an existing message's content changed, re-process ───
+          // if (!hasImage && waId) {
+          //   const existingMsg = await this.messageRepo.findOne({
+          //     where: { waMessageId: waId },
+          //   });
+
+          //   if (existingMsg && existingMsg.body && existingMsg.body !== body) {
+          //     this.logger.log(
+          //       `[Maytapi Poll] ✏️ Edited message from ${senderName}: "${existingMsg.body.slice(0, 50)}" → "${body.slice(0, 50)}"`,
+          //     );
+
+          //     // Update stored body
+          //     const oldBody = existingMsg.body;
+          //     existingMsg.body = body;
+          //     await this.messageRepo.save(existingMsg);
+
+          //     // Re-process if sender is a pricer and new body has a rate
+          //     const pricerPhone = this.config.pricerPhoneFor(
+          //       senderKey,
+          //       senderName,
+          //     );
+          //     if (pricerPhone) {
+          //       const editedReply = this.parser.parseRateReply(body);
+          //       if (editedReply) {
+          //         await this.matcher.handlePricerMessage(
+          //           existingMsg,
+          //           editedReply,
+          //         );
+          //         this.logger.log(
+          //           `[Maytapi Poll] ✏️ Edited rate re-processed → new rate: ${editedReply.rates.join(', ')}`,
+          //         );
+          //       }
+          //     } else {
+          //       this.logger.log(
+          //         `[Maytapi Poll] ✏️ Edited message was not from a pricer — body updated only`,
+          //       );
+          //     }
+          //     continue; // Don't double-process below
+          //   }
+          // }
+
+          // ─── EDIT DETECTION: if an existing message's content changed, re-process ───
+          if (!hasImage && waId) {
             const existingMsg = await this.messageRepo.findOne({
               where: { waMessageId: waId },
             });
 
-            if (existingMsg) {
-              if (existingMsg.inquiryId) {
-                // Already has an inquiry → skip
-                this.logger.log(
-                  `[Maytapi Poll] Image message already has inquiry #${existingMsg.inquiryId} → skipping`,
-                );
-                continue;
-              }
-
-              // Message exists but NO inquiry → we need to create one + run OCR
-              msgId = existingMsg.id;
+            if (existingMsg && existingMsg.body && existingMsg.body !== body) {
               this.logger.log(
-                `[Maytapi Poll] Image message exists but no inquiry → creating placeholder + OCR`,
+                `[Maytapi Poll] ✏️ Edited message from ${senderName}: "${existingMsg.body.slice(0, 50)}" → "${body.slice(0, 50)}"`,
               );
 
-              // Create placeholder inquiry directly
-              const inq = this.inquiryRepo.create({
-                groupKey: groupKey,
-                messageId: existingMsg.id,
-                requesterKey: senderKey,
-                requesterName: this.config.requesterName(senderKey, senderName),
-                postedAt: msgTime,
-                lane: '[Image Inquiry - check WhatsApp]',
-                spec: '',
-                vehicleType: '',
-                rawBody: '[IMAGE INQUIRY - OCR pending]',
-                status: 'OPEN',
-                assignedToKey: null,
-                assignedToName: null,
-              });
-              await this.inquiryRepo.save(inq);
-              existingMsg.inquiryId = inq.id;
+              existingMsg.body = body;
               await this.messageRepo.save(existingMsg);
-              this.logger.log(
-                `[Maytapi Poll] Placeholder inquiry #${inq.id} created for existing image message`,
+
+              const pricerPhone = this.config.pricerPhoneFor(
+                senderKey,
+                senderName,
               );
+              if (pricerPhone) {
+                const editedReply = this.parser.parseRateReply(body);
+                if (editedReply) {
+                  await this.matcher.handlePricerMessage(
+                    existingMsg,
+                    editedReply,
+                  );
+                  this.logger.log(
+                    `[Maytapi Poll] ✏️ Edited rate re-processed → new rate: ${editedReply.rates.join(', ')}`,
+                  );
+                }
+              }
+              continue;
             }
           }
 
-          // ─── Run OCR in background ───
-          if (msgId && imageUrl) {
-            this.runOcrInBackground(
-              imageUrl,
-              msgId,
-              groupKey,
-              senderKey,
-              senderName,
-              msgTime,
-              waId,
-            ).catch((err) => {
-              this.logger.error(
-                `[Maytapi Poll] OCR background error: ${err.message}`,
-              );
-            });
-          }
-          continue;
-        }
+          // // ─── If it's an image message, save it and create placeholder inquiry ───
+          // if (hasImage && !body) {
+          //   this.logger.log(
+          //     `[Maytapi Poll] Image message detected from ${senderName}`,
+          //   );
 
-        // ─── Also handle image WITH caption (text + image) ───
-        if (hasImage && body) {
-          this.logger.log(
-            `[Maytapi Poll] Image+caption message from ${senderName}: "${body.slice(0, 80)}"`,
-          );
+          //   const placeholderBody = m.message?.caption || '[IMAGE INQUIRY]';
 
-          // Process the caption as normal text first
-          const captionResult = await this.ingest.ingestMessage({
-            groupKey: groupKey,
-            senderKey: senderKey,
-            senderName: senderName || undefined,
-            body: body,
-            postedAt: msgTime,
-            waMessageId: waId,
-            source: 'maytapi',
-            quotedText: quotedText,
-            quotedWaId: quotedWaId,
-          });
+          //   const result = await this.ingest.ingestMessage({
+          //     groupKey: groupKey,
+          //     senderKey: senderKey,
+          //     senderName: senderName || undefined,
+          //     body: placeholderBody,
+          //     postedAt: msgTime,
+          //     waMessageId: waId,
+          //     source: 'maytapi',
+          //     quotedText: quotedText,
+          //     quotedWaId: quotedWaId,
+          //   });
 
-          if (captionResult) {
-            newCount++;
+          //   if (result) {
+          //     newCount++;
+          //     this.logger.log(
+          //       `[Maytapi Poll] Image message ingested as placeholder inquiry`,
+          //     );
+
+          //     // ─── Run OCR in background (don't block the poll loop) ───
+          //     if (imageUrl) {
+          //       this.runOcrInBackground(
+          //         imageUrl,
+          //         result.id,
+          //         groupKey,
+          //         senderKey,
+          //         senderName,
+          //         msgTime,
+          //         waId,
+          //       ).catch((err) => {
+          //         this.logger.error(
+          //           `[Maytapi Poll] OCR background error: ${err.message}`,
+          //         );
+          //       });
+          //     }
+          //   }
+          //   continue; // Skip normal text processing for this message
+          // }
+
+          // ─── If it's an image WITHOUT caption → placeholder inquiry + OCR ───
+          if (hasImage && !body) {
             this.logger.log(
-              `[Maytapi Poll] Quoted message → id=${quotedWaId || 'NONE'}, text="${quotedText || ''}"`,
+              `[Maytapi Poll] Image message detected from ${senderName}`,
             );
 
-            // ─── Run OCR to UPDATE the existing inquiry (not create new) ───
-            if (imageUrl) {
+            const placeholderBody = '[IMAGE INQUIRY]';
+
+            // Try to ingest — if it's a duplicate, we still need to check if it has an inquiry
+            const result = await this.ingest.ingestMessage({
+              groupKey: groupKey,
+              senderKey: senderKey,
+              senderName: senderName || undefined,
+              body: placeholderBody,
+              postedAt: msgTime,
+              waMessageId: waId,
+              source: 'maytapi',
+              quotedText: quotedText,
+              quotedWaId: quotedWaId,
+            });
+
+            let msgId: number | null = null;
+
+            if (result) {
+              // New message → use its ID
+              msgId = result.id;
+              newCount++;
+              this.logger.log(
+                `[Maytapi Poll] Image message ingested as placeholder inquiry`,
+              );
+            } else if (waId) {
+              // Duplicate message → check if it already has an inquiry
+              const existingMsg = await this.messageRepo.findOne({
+                where: { waMessageId: waId },
+              });
+
+              if (existingMsg) {
+                if (existingMsg.inquiryId) {
+                  // Already has an inquiry → skip
+                  this.logger.log(
+                    `[Maytapi Poll] Image message already has inquiry #${existingMsg.inquiryId} → skipping`,
+                  );
+                  continue;
+                }
+
+                // Message exists but NO inquiry → we need to create one + run OCR
+                msgId = existingMsg.id;
+                this.logger.log(
+                  `[Maytapi Poll] Image message exists but no inquiry → creating placeholder + OCR`,
+                );
+
+                // Create placeholder inquiry directly
+                const inq = this.inquiryRepo.create({
+                  groupKey: groupKey,
+                  messageId: existingMsg.id,
+                  requesterKey: senderKey,
+                  requesterName: this.config.requesterName(
+                    senderKey,
+                    senderName,
+                  ),
+                  postedAt: msgTime,
+                  lane: '[Image Inquiry - check WhatsApp]',
+                  spec: '',
+                  vehicleType: '',
+                  rawBody: '[IMAGE INQUIRY - OCR pending]',
+                  status: 'OPEN',
+                  assignedToKey: null,
+                  assignedToName: null,
+                });
+                await this.inquiryRepo.save(inq);
+                existingMsg.inquiryId = inq.id;
+                await this.messageRepo.save(existingMsg);
+                this.logger.log(
+                  `[Maytapi Poll] Placeholder inquiry #${inq.id} created for existing image message`,
+                );
+              }
+            }
+
+            // ─── Run OCR in background ───
+            if (msgId && imageUrl) {
               this.runOcrInBackground(
                 imageUrl,
-                captionResult.id,
+                msgId,
                 groupKey,
                 senderKey,
                 senderName,
@@ -964,35 +974,91 @@ export class SchedulerService {
                 );
               });
             }
+            continue;
           }
-          continue; // - dont fall through to normal processing
 
-          // Fall through to normal text processing below
+          // ─── Also handle image WITH caption (text + image) ───
+          if (hasImage && body) {
+            this.logger.log(
+              `[Maytapi Poll] Image+caption message from ${senderName}: "${body.slice(0, 80)}"`,
+            );
+
+            // Process the caption as normal text first
+            const captionResult = await this.ingest.ingestMessage({
+              groupKey: groupKey,
+              senderKey: senderKey,
+              senderName: senderName || undefined,
+              body: body,
+              postedAt: msgTime,
+              waMessageId: waId,
+              source: 'maytapi',
+              quotedText: quotedText,
+              quotedWaId: quotedWaId,
+            });
+
+            if (captionResult) {
+              newCount++;
+              this.logger.log(
+                `[Maytapi Poll] Quoted message → id=${quotedWaId || 'NONE'}, text="${quotedText || ''}"`,
+              );
+
+              // ─── Run OCR to UPDATE the existing inquiry (not create new) ───
+              if (imageUrl) {
+                this.runOcrInBackground(
+                  imageUrl,
+                  captionResult.id,
+                  groupKey,
+                  senderKey,
+                  senderName,
+                  msgTime,
+                  waId,
+                ).catch((err) => {
+                  this.logger.error(
+                    `[Maytapi Poll] OCR background error: ${err.message}`,
+                  );
+                });
+              }
+            }
+            continue; // - dont fall through to normal processing
+
+            // Fall through to normal text processing below
+          }
+
+          const result = await this.ingest.ingestMessage({
+            groupKey: groupKey,
+            senderKey: senderKey,
+            senderName: senderName || undefined,
+            body: body,
+            postedAt: msgTime,
+            waMessageId: waId,
+            source: 'maytapi',
+            quotedText: quotedText,
+            quotedWaId: quotedWaId,
+          });
+
+          this.logger.log(
+            `[Maytapi Poll] Quoted message → id=${quotedWaId || 'NONE'}, text="${quotedText || ''}"`,
+          );
+
+          // if (result) newCount++;
+
+          totalNew += newCount;
         }
 
-        const result = await this.ingest.ingestMessage({
-          groupKey: groupKey,
-          senderKey: senderKey,
-          senderName: senderName || undefined,
-          body: body,
-          postedAt: msgTime,
-          waMessageId: waId,
-          source: 'maytapi',
-          quotedText: quotedText,
-          quotedWaId: quotedWaId,
-        });
+        //     if (newCount > 0) {
+        //       this.logger.log(
+        //         `[Maytapi Poll] Ingested ${newCount} new message(s) from group ${groupKey}`,
+        //       );
+        //     }
+        //   }
+        // }
+        this.pollFailureStreak = 0;
 
-        this.logger.log(
-          `[Maytapi Poll] Quoted message → id=${quotedWaId || 'NONE'}, text="${quotedText || ''}"`,
-        );
-
-        if (result) newCount++;
-      }
-
-      if (newCount > 0) {
-        this.logger.log(
-          `[Maytapi Poll] Ingested ${newCount} new message(s) from group ${groupKey}`,
-        );
+        if (totalNew > 0) {
+          this.logger.log(
+            `[Maytapi Poll] Ingested ${totalNew} new message(s) from group ${groupKey}`,
+          );
+        }
       }
     } catch (err: any) {
       this.logger.error(`[Maytapi Poll] Error: ${err.message}`);

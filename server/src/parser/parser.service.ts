@@ -865,6 +865,42 @@ export class ParserService {
     return out;
   }
 
+  // ─── "spec line + rate line" pairs — pricers copying the inquiry text
+  // back with each rate on its own line:
+  //   1x40' weight 22.mt+C
+  //    130000/14day
+  //   1x40' weight 24.mt+C
+  //    132000/14day mkt
+  //   → [{ size: "22MT+C", rate: "130000" }, { size: "24MT+C", rate: "132000" }]
+  private sizeRatesAcrossLines(body: string): { size: string; rate: string }[] {
+    const out: { size: string; rate: string }[] = [];
+    const lines = body.split(/\r?\n/).map((l) => l.trim());
+    for (let i = 0; i < lines.length - 1; i++) {
+      const spec = lines[i];
+      const rateLine = lines[i + 1];
+
+      // spec line: has a weight (22.mt, 14900 kg, 24MT...) but no rate of its own
+      const wm = spec.match(
+        /(\d+(?:\.\d+)?)\s*\.?\s*(mt|kg|tn)\b\s*(\+?\s*c)?\b/i,
+      );
+      if (!wm) continue;
+      if (/\d{4,6}\s*(\/-|\/)/.test(spec)) continue;
+
+      // rate line: short line that is basically just a rate (+validity/mkt)
+      const rm = rateLine.match(/(\d{4,6})/);
+      if (!rm) continue;
+      if (rateLine.replace(/\s+/g, ' ').length > 22) continue;
+      const val = parseInt(rm[1], 10);
+      if (val < MIN_RATE || val > MAX_RATE) continue;
+
+      const size = (wm[1] + wm[2] + (wm[3] ? '+C' : ''))
+        .toUpperCase()
+        .replace(/\s+/g, '');
+      out.push({ size, rate: rm[1] });
+    }
+    return out;
+  }
+
   // ─── Heuristic: truck/driver-details reply, not an inquiry ───
   private looksLikeTransportDetails(body: string): boolean {
     const vehicleNo = /\b[A-Z]{2}\d{1,2}[A-Z]{1,3}\d{4}\b/.test(
@@ -1596,7 +1632,12 @@ export class ParserService {
     const wts = this.weightsOf(body);
 
     // Extract size-specific rates
-    const sizeRates = this.sizeRatesOf(body);
+    // const sizeRates = this.sizeRatesOf(body);
+    // Extract size-specific rates (same-line pairs + next-line pairs)
+    const sizeRates = [
+      ...this.sizeRatesOf(body),
+      ...this.sizeRatesAcrossLines(body),
+    ];
 
     const rates: string[] = [];
 

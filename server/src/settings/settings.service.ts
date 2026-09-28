@@ -323,7 +323,7 @@ export class SettingsService {
       .update()
       .set({
         archived: true,
-        status: 'WITHDRAWN',
+
         closedAt: new Date(),
         closeReason: 'group changed',
       })

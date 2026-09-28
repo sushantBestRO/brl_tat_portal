@@ -41,7 +41,9 @@ export class IngestService {
   }): Promise<ChatMessage | null> {
     // Ignore messages from unknown groups
     if (!this.config.isKnownGroup(params.groupKey)) {
-      this.logger.debug(`ignoring message from unknown group ${params.groupKey}`);
+      this.logger.debug(
+        `ignoring message from unknown group ${params.groupKey}`,
+      );
       return null;
     }
 
@@ -59,9 +61,26 @@ export class IngestService {
     const existing = await this.messageRepo.findOne({
       where: { waMessageId: mid },
     });
-    if (existing) return null;
+    // if (existing) return null;
 
-        // Save the message
+    // ─── FIX: a message stored but never classified (server restart or
+    // crash between "saved" and "classified") must be RE-PROCESSED, not
+    // skipped forever. This is how messages "disappear" from the portal. ───
+    if (existing) {
+      if (
+        (existing.classification === null ||
+          existing.classification === undefined) &&
+        existing.inquiryId === null
+      ) {
+        this.logger.log(`[Ingest] Re-processing unclassified message ${mid}`);
+        const classification = await this.matcher.routeMessage(existing);
+        existing.classification = classification;
+        await this.messageRepo.save(existing);
+        return existing;
+      }
+      return null;
+    }
+    // Save the message
     const msg = new ChatMessage();
     msg.waMessageId = mid;
     msg.groupKey = params.groupKey;
@@ -74,7 +93,6 @@ export class IngestService {
     msg.quotedText = params.quotedText || null;
 
     await this.messageRepo.save(msg);
-
 
     // Classify it using the matcher engine
     const classification = await this.matcher.routeMessage(msg);
@@ -106,9 +124,7 @@ export class IngestService {
 
           out.push({
             groupKey:
-              m.group_id ||
-              value?.metadata?.display_phone_number ||
-              'unknown',
+              m.group_id || value?.metadata?.display_phone_number || 'unknown',
             senderKey: m.from || '',
             senderName: contacts[m.from] || null,
             body: m?.text?.body || '',
@@ -223,8 +239,7 @@ export class IngestService {
     // Extract reply-to info if this message was a WhatsApp reply
     const contextInfo = rec?.message?.extendedTextMessage?.contextInfo;
     const quotedWaId = contextInfo?.stanzaId || null;
-    const quotedText =
-      contextInfo?.quotedMessage?.conversation || null;
+    const quotedText = contextInfo?.quotedMessage?.conversation || null;
 
     return {
       groupKey: remoteJid,
@@ -300,12 +315,8 @@ export class IngestService {
   }
 }
 
-
-
 // Why do we need this module?
 // WhatsApp messages can arrive through three different providers, each with a completely different JSON structure:
-
-
 
 // Meta Cloud API:
 // { entry: [{ changes: [{ value: { messages: [{ from: "919...", text: { body: "rate plz" } }] } }] }] }
@@ -318,7 +329,6 @@ export class IngestService {
 // The ingest module normalizes all three into the same shape:
 
 // typescript
-
 
 // { groupKey: "919...", senderKey: "919...", body: "rate plz", postedAt: Date, waMessageId: "..." }
 // Then calls ingestMessage() which stores it and passes it to the matcher for classification.
