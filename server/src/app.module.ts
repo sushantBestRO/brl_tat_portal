@@ -117,10 +117,17 @@ import { ParserService } from './parser/parser.service';
 import { SchedulerModule } from './scheduler/scheduler.module';
 import { ImportHistoryModule } from './import-history/import-history.module';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
+import { AiParserService } from './parser/ai-parser.service';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
+import { CallsModule } from './call/call.module';
 
 @Module({
   imports: [
     // 1. Load .env file (make it global so all modules can access env vars)
+
+    ThrottlerModule.forRoot([{ name: 'default', ttl: 60000, limit: 120 }]),
+
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '../.env',
@@ -140,7 +147,7 @@ import { JwtAuthGuard } from './auth/jwt-auth.guard';
         type: 'postgres',
         url: config.get<string>('DATABASE_URL'),
         autoLoadEntities: true,
-        // synchronize: true, // Auto-create tables on startup
+        //synchronize: true, // Auto-create tables on startup
         synchronize: process.env.NODE_ENV === 'development',
         logging: false,
       }),
@@ -163,9 +170,14 @@ import { JwtAuthGuard } from './auth/jwt-auth.guard';
     DashboardModule,
     SchedulerModule,
     ImportHistoryModule,
+    CallsModule
   ],
   // newl added for security
-  providers: [JwtAuthGuard],
+  providers: [
+    JwtAuthGuard,
+    AiParserService,
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+  ],
 })
 export class AppModule implements OnModuleInit {
   constructor(

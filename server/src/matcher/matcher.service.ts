@@ -8,6 +8,7 @@ import { AppConfigService } from '../config/app-config.service';
 import { ParserService } from '../parser/parser.service';
 import { NotifyService } from 'src/notify/notify.service';
 import { Like } from 'typeorm';
+import { AiParserService } from 'src/parser/ai-parser.service';
 
 // ─── Matching thresholds (same as original Python project) ───
 const REPOST_SIM = 0.65; // If similarity > 0.65, it's a repost (→ chase)
@@ -15,6 +16,12 @@ const QUOTED_MATCH = 0.55; // If similarity > 0.55, rate reply matches inquiry
 const MATCH_WINDOW_DAYS = 5; // How far back to look for open inquiries
 const SEQUENCE_WINDOW_HOURS = 24; // FIFO fallback window
 const CHASE_WINDOW_DAYS = 3; // How far back to look for chase target
+
+const EXTRA_CHASE_RE =
+  /\b(reaply|ripaly|replay|reply|repl|respond|response|update|updte|status|waiting|wait|jawab|answer|ans|karo|kar\s*do|batado|batao|confirm\s*karo)\b/i;
+
+const laneTokens = (lane: string): Set<string> =>
+  new Set((lane || '').toLowerCase().split(/\s+/).filter(Boolean));
 
 @Injectable()
 export class MatcherService {
@@ -27,6 +34,7 @@ export class MatcherService {
     private config: AppConfigService,
     private parser: ParserService,
     private notify: NotifyService,
+    private readonly ai: AiParserService,
   ) {}
 
   // --- MAIN Entry point --- //
@@ -110,6 +118,10 @@ export class MatcherService {
     return result;
   }
 
+  private isChaseLoose(body: string): boolean {
+    return this.parser.isChase(body) || EXTRA_CHASE_RE.test(body);
+  }
+
   // ─── Get open inquiries in a group within a time window ───
   // 8/9/26
   // private async getOpenInquiries(
@@ -189,7 +201,43 @@ export class MatcherService {
   // ─── Handle message from a requester (not pricing team) ───
   async handleRequesterMessage(msg: ChatMessage): Promise<string> {
     const body = msg.body || '';
-    const parsed = this.parser.parseInquiry(body);
+    let parsed = this.parser.parseInquiry(body);
+
+    // ─── AI FALLBACK: regex failed → let Gemini try before giving up ───
+    if (!parsed && this.ai.enabled && body.trim().length >= 4) {
+      try {
+        const res = await this.ai.parseInquiryText(body);
+        if (res.status === 'parsed') {
+          parsed = {
+            lane: res.data.lane,
+            spec: res.data.spec,
+            weights: new Set(res.data.weights),
+            tokens: new Set(
+              (
+                res.data.lane +
+                ' ' +
+                body.toLowerCase().replace(/[^a-z0-9\s]/g, ' ')
+              )
+                .split(/\s+/)
+                .filter(Boolean),
+            ),
+            vehicleType: res.data.vehicleType,
+          } as any;
+          this.logger.log(
+            `[Matcher] ✨ AI fallback parsed → lane="${res.data.lane}"`,
+          );
+        } else if (res.status === 'not_inquiry') {
+          this.logger.log('[Matcher] AI ran — message is not an inquiry');
+        } else {
+          this.logger.error(
+            `[Matcher] ⚠️ AI UNAVAILABLE (${res.reason}) — message NOT parsed. ` +
+              `If this is an inquiry it needs manual classification: "${body.slice(0, 120)}"`,
+          );
+        }
+      } catch (err: any) {
+        this.logger.warn(`[Matcher] AI fallback failed: ${err.message}`);
+      }
+    }
 
     if (parsed) {
       // ─── It's an inquiry! But is it a repost? ───
@@ -198,10 +246,38 @@ export class MatcherService {
         `[Matcher] parseInquiry SUCCESS → lane="${parsed.lane}", spec="${parsed.spec}". Checking for repost...`,
       );
 
+      // const recent = await this.inquiryRepo.find({
+      //   where: { groupKey: msg.groupKey, status: 'OPEN', archived: false },
+      //   order: { postedAt: 'ASC' },
+      // });
+
+      // for (let i = recent.length - 1; i >= 0; i--) {
+      //   const inq = recent[i];
+      //   if (inq.requesterKey !== msg.senderKey) continue;
+      //   const since = new Date(msg.postedAt.getTime() - 7 * 86400000);
+      //   if (new Date(inq.postedAt) < since) continue;
+
+      //   // If > 65% similar to an existing open inquiry → it's a chase, not new
+      //   if (
+      //     this.parser.jaccard(
+      //       parsed.tokens,
+      //       this.parser.tokensOf(inq.rawBody),
+      //     ) > REPOST_SIM
+      //   ) {
+      //     this.logger.log(
+      //       `[Matcher] Repost detected (similarity > ${REPOST_SIM}) → classified as CHASE`,
+      //     );
+      //     await this.recordChase(inq, msg, 're-posted the inquiry');
+      //     return 'CHASE';
+      //   }
+      // }
+
       const recent = await this.inquiryRepo.find({
         where: { groupKey: msg.groupKey, status: 'OPEN', archived: false },
         order: { postedAt: 'ASC' },
       });
+
+      const newLaneToks = laneTokens(parsed.lane); // ← add this line after the query
 
       for (let i = recent.length - 1; i >= 0; i--) {
         const inq = recent[i];
@@ -209,15 +285,16 @@ export class MatcherService {
         const since = new Date(msg.postedAt.getTime() - 7 * 86400000);
         if (new Date(inq.postedAt) < since) continue;
 
-        // If > 65% similar to an existing open inquiry → it's a chase, not new
-        if (
-          this.parser.jaccard(
-            parsed.tokens,
-            this.parser.tokensOf(inq.rawBody),
-          ) > REPOST_SIM
-        ) {
+        // Similarity on the raw body AND on the extracted lane itself —
+        // catches reposts where wording differs but the lane is identical.
+        const bodySim = this.parser.jaccard(
+          parsed.tokens,
+          this.parser.tokensOf(inq.rawBody),
+        );
+        const laneSim = this.parser.jaccard(newLaneToks, laneTokens(inq.lane));
+        if (Math.max(bodySim, laneSim) > REPOST_SIM) {
           this.logger.log(
-            `[Matcher] Repost detected (similarity > ${REPOST_SIM}) → classified as CHASE`,
+            `[Matcher] Repost detected (bodySim=${bodySim.toFixed(2)}, laneSim=${laneSim.toFixed(2)} > ${REPOST_SIM}) → classified as CHASE`,
           );
           await this.recordChase(inq, msg, 're-posted the inquiry');
           return 'CHASE';
@@ -256,7 +333,7 @@ export class MatcherService {
     }
 
     // ─── Not an inquiry. Is it a chase? ───
-    if (this.parser.isChase(body)) {
+    if (this.isChaseLoose(body)) {
       this.logger.log(
         `[Matcher] parseInquiry FAILED but isChase detected → checking for chase target...`,
       );

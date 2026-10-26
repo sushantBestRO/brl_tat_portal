@@ -1267,6 +1267,9 @@ export class ParserService {
   vehicleTypeOf(body: string): string {
     if (!body) return '';
 
+    // ─── FIX: WhatsApp renders "1x20" as "1×20" (Unicode multiplication
+    // sign) — normalize it so the size patterns match. ───
+    body = body.replace(/×/g, 'x');
     const lines = body
       .split('\n')
       .map((l) => l.trim())

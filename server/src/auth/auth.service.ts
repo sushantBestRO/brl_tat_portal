@@ -1,4 +1,9 @@
-import { Injectable, OnModuleInit, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  OnModuleInit,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
@@ -18,11 +23,14 @@ export class AuthService implements OnModuleInit {
 
   // ─── Auto-seed admin user on first startup ───
   async onModuleInit() {
-    const email = this.envConfig.get<string>('ADMIN_EMAIL', 'admin@bestroadways.com');
+    const email = this.envConfig.get<string>(
+      'ADMIN_EMAIL',
+      'admin@bestroadways.com',
+    );
     const existing = await this.userRepo.findOne({ where: { email } });
 
     if (!existing) {
-      const password = this.envConfig.get<string>('ADMIN_PASSWORD', 'admin123');
+      const password = this.envConfig.getOrThrow<string>('ADMIN_PASSWORD');
       const passwordHash = await bcrypt.hash(password, 10);
 
       await this.userRepo.save(
@@ -64,7 +72,6 @@ export class AuthService implements OnModuleInit {
   }
 }
 
-
 // onModuleInit() — auto-seed admin
 // When the server starts for the very first time, there are no users in the database. This method checks if the admin email (from .env) exists. If not, it creates one with the admin password (also from .env), hashed using bcrypt.
 
@@ -76,4 +83,3 @@ export class AuthService implements OnModuleInit {
 // If valid, sign a JWT token containing the user ID, email, and role
 // Return the token + user info (without the password hash)
 // The frontend stores this token in localStorage and sends it as Authorization: Bearer <token> in every API request.
-

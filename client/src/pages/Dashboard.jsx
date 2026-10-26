@@ -846,6 +846,7 @@ import { FaWhatsapp } from "react-icons/fa";
 import { SiGmail } from "react-icons/si";
 import { Phone, Megaphone } from "lucide-react";
 import Modal from "../components/Modal";
+import CallModal from "../components/CallModal";
 
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
@@ -866,6 +867,11 @@ export default function Dashboard() {
   const [callTarget, setCallTarget] = useState(null);
   const [showBroadcastModal, setShowBroadcastModal] = useState(false);
   const [broadcastTarget, setBroadcastTarget] = useState(null);
+
+  // ─── Click-to-Call (Runo) state ───
+  const [showConnectModal, setShowConnectModal] = useState(false);
+  const [connectTarget, setConnectTarget] = useState(null);
+  const [callerPhone, setCallerPhone] = useState("");
 
   // ─── Today-only lists (dashboard shows only today's) ───
   const [todayLive, setTodayLive] = useState([]);
@@ -952,6 +958,10 @@ export default function Dashboard() {
       .get("/email-status")
       .then((res) => setEmailStatus(res.data))
       .catch(() => {});
+    api
+      .get("/calls/config")
+      .then((res) => setCallerPhone(res.data?.caller_phone || ""))
+      .catch(() => {})
     const interval = setInterval(() => {
       if (!isInteracting) {
         fetchStats();
@@ -1499,10 +1509,15 @@ export default function Dashboard() {
                               background: "transparent",
                               opacity: 0.85,
                             }}
+                            //  onClick={() => {
+                            //   setCallTarget(inq);
+                            //    setShowCallModal(true);
+                            //  }}
                             onClick={() => {
-                              setCallTarget(inq);
-                              setShowCallModal(true);
+                              setConnectTarget(inq);
+                              setShowConnectModal(true);
                             }}
+                          
                           >
                             <Phone size={16} color="#34B7F1" />
                           </button>
@@ -1792,7 +1807,7 @@ export default function Dashboard() {
       {/* ─── Custom Modals ─── */}
 
       {/* Call Modal */}
-      {showCallModal && callTarget && (
+      {/* {showCallModal && callTarget && (
         <Modal
           title="Log Call Outcome"
           input={{
@@ -1807,8 +1822,21 @@ export default function Dashboard() {
           }}
           onCancel={() => setShowCallModal(false)}
         />
-      )}
+      )} */}
 
+       {/* Connect Call Modal (Runo — click to call) */}
+      <CallModal
+        open={showConnectModal}
+        onClose={() => setShowConnectModal(false)}
+        inquiry={connectTarget}
+        callerPhone={callerPhone}
+        team={pricingTeam}
+        showToast={showToast}
+        onConnected={() => fetchStats()}
+      />
+      
+
+      
       {/* Broadcast Modal */}
       {showBroadcastModal && broadcastTarget && (
         <Modal
@@ -1834,6 +1862,10 @@ export default function Dashboard() {
           onCancel={() => setShowBroadcastModal(false)}
         />
       )}
+
+      {/* Connect Call Modal (Runo — click to call) */}
+
+
 
       {/* Toast notification */}
       {toast && (

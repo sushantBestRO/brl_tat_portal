@@ -19,7 +19,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
       // Must match the secret used to SIGN the token in auth.module.ts,
       // or every token will fail verification.
-      secretOrKey: envConfig.get<string>('JWT_SECRET', 'dev-secret'),
+      secretOrKey: envConfig.getOrThrow<string>('JWT_SECRET'),
     });
   }
 

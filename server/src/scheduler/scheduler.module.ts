@@ -10,6 +10,7 @@ import { SchedulerStatusController } from './scheduler-status.controller';
 import { OcrService } from 'src/services/ocr.service';
 import { ParserModule } from 'src/parser/parser.module';
 import { MatcherModule } from 'src/matcher/matcher.module';
+import { AiParserService } from 'src/parser/ai-parser.service';
 
 @Module({
   imports: [
@@ -20,6 +21,6 @@ import { MatcherModule } from 'src/matcher/matcher.module';
     MatcherModule,
   ],
   controllers: [SchedulerStatusController],
-  providers: [SchedulerService, OcrService],
+  providers: [SchedulerService, OcrService, AiParserService],
 })
 export class SchedulerModule {}

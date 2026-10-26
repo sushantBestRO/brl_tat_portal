@@ -365,16 +365,84 @@ export class OcrService {
     return this.worker;
   }
 
+  // // ─── Extract text from an image URL ───
+  // async extractText(imageUrl: string): Promise<string | null> {
+  //   try {
+  //     const worker = await this.getWorker();
+  //     this.logger.log(`[OCR] Processing image: ${imageUrl.slice(0, 80)}...`);
+
+  //     const { data } = await worker.recognize(imageUrl);
+  //     const text = data?.text || '';
+
+  //     this.logger.log(`[OCR RAW] ${JSON.stringify(text)}`);
+
+  //     this.logger.log(
+  //       `[OCR] Extracted ${text.length} chars: "${text.slice(0, 200)}"`,
+  //     );
+  //     return text.trim();
+  //   } catch (err: any) {
+  //     this.logger.error(`[OCR] Failed: ${err.message}`);
+  //     return null;
+  //   }
+  // }
+
   // ─── Extract text from an image URL ───
+  // ─── FIX (server-crash bug): Tesseract used to download the image
+  // itself, and when the URL was bad (expired link, HTML error page)
+  // it threw an UNCATCHABLE worker error that killed the whole Node
+  // process ("pixReadStream: Unknown format"). Now WE download the
+  // image first, validate it's a real image, and only then hand the
+  // buffer to Tesseract. Bad URL → clean log, no crash. ───
   async extractText(imageUrl: string): Promise<string | null> {
     try {
+      // 1. Download the image ourselves
+      const resp = await fetch(imageUrl);
+      if (!resp.ok) {
+        this.logger.error(
+          `[OCR] Image download failed: status ${resp.status} — skipping OCR (no crash)`,
+        );
+        return null;
+      }
+      const buf = Buffer.from(await resp.arrayBuffer());
+      if (!buf.length) {
+        this.logger.error(`[OCR] Image download returned 0 bytes — skipping`);
+        return null;
+      }
+
+      // 2. Validate it's actually an image (magic bytes)
+      const sig = buf.subarray(0, 12);
+      const isJpg = sig[0] === 0xff && sig[1] === 0xd8;
+      const isPng = sig[0] === 0x89 && sig[1] === 0x50;
+      const isBmp = sig[0] === 0x42 && sig[1] === 0x4d;
+      const isTiff =
+        (sig[0] === 0x49 && sig[1] === 0x49) ||
+        (sig[0] === 0x4d && sig[1] === 0x4d);
+      const isWebp =
+        sig.subarray(0, 4).toString('ascii') === 'RIFF' &&
+        sig.subarray(8, 12).toString('ascii') === 'WEBP';
+
+      if (!isJpg && !isPng && !isBmp && !isTiff && !isWebp) {
+        this.logger.error(
+          `[OCR] URL did not return a valid image (${buf.length} bytes) — skipping. ` +
+            `Likely an expired link or HTML error page.`,
+        );
+        return null;
+      }
+      if (isWebp) {
+        this.logger.error(
+          `[OCR] WEBP image not supported by Tesseract — skipping (${buf.length} bytes)`,
+        );
+        return null;
+      }
+
+      // 3. Safe: hand the buffer to Tesseract
       const worker = await this.getWorker();
-      this.logger.log(`[OCR] Processing image: ${imageUrl.slice(0, 80)}...`);
+      this.logger.log(
+        `[OCR] Processing image (${buf.length} bytes, ${isJpg ? 'jpg' : isPng ? 'png' : 'img'})`,
+      );
 
-      const { data } = await worker.recognize(imageUrl);
+      const { data } = await worker.recognize(buf);
       const text = data?.text || '';
-
-      this.logger.log(`[OCR RAW] ${JSON.stringify(text)}`);
 
       this.logger.log(
         `[OCR] Extracted ${text.length} chars: "${text.slice(0, 200)}"`,
@@ -384,6 +452,23 @@ export class OcrService {
       this.logger.error(`[OCR] Failed: ${err.message}`);
       return null;
     }
+  }
+
+  // ─── OCR-tolerant weight value ───
+  // "30MT" ✓ · "1omMT" → 10MT (letter O misread for zero) · "2mr" → 2MT
+  private extractWeightValue(s: string): string {
+    if (!s) return '';
+    // "1omMT" → "10mMT": digit followed by letter O → zero
+    const t = s.replace(/(\d)\s*o(?=[a-z])/gi, '$10');
+    // tolerate ONE junk letter between number and unit: "10mMT" → 10MT
+    const m = t.match(
+      /(\d{1,3}(?:\.\d+)?)\s*[a-z]?\s*(MT|KG|TON|TONS)\+?C?\b/i,
+    );
+    if (m) return (m[1] + m[2]).toUpperCase().replace(/\s+/g, '');
+    // "2mr Solar Modules" → 2MT (T misread as r)
+    const m2 = t.match(/(\d{1,3})\s*MR\b/i);
+    if (m2) return m2[1] + 'MT';
+    return '';
   }
 
   parseSuperProcure(text: string): {
@@ -418,7 +503,9 @@ export class OcrService {
       //    or OCR-garbled arrow "Patalganga IN Samana" ───
       if (!fromCity) {
         const arrowMatch = line.match(
-          /^(.+?)\s*(?:[→>]|\bto\b|\bin\b)\s*(.+?)(?:\s+(\d{6}))?$/i,
+          // /^(.+?)\s*(?:[→>]|\bto\b|\bin\b)\s*(.+?)(?:\s+(\d{6}))?$/i,
+          /^(.+?)\s*(?:[→>]|\bto\b|\bin\b|\bre\b)\s*(.+?)(?:\s+(\d{6}))?$/i,
+          //                                    ^^^^^^ added
         );
         if (
           arrowMatch &&
@@ -444,7 +531,16 @@ export class OcrService {
       ) {
         vehicleType = lines[i + 1] || '';
         vehicleType = vehicleType
+          // .replace(/[@©®]/g, '')
+          // .replace(/\bFTL\b/gi, '')
+          // .replace(/°/g, "'")
+          // .replace(/×/g, 'x')
+          // .replace(/\s+/g, ' ')
+          // .trim();
           .replace(/[@©®]/g, '')
+          .replace(/<\s*(\d)/gi, 'x$1')
+          .replace(/\b(?:tater|tatler)\b/gi, 'trailer')
+          .replace(/\b4s\s+trailer\b/gi, '45ft trailer')
           .replace(/\bFTL\b/gi, '')
           .replace(/°/g, "'")
           .replace(/×/g, 'x')
@@ -454,14 +550,19 @@ export class OcrService {
       }
 
       // ─── Weight: OCR garbles "WEIGHT" as "fy wee", etc. ───
-      if (/fy wee|weight|wt\b/i.test(line) && i < lines.length - 1) {
-        weight = lines[i + 1] || '';
-        const wMatch = weight.match(/(\d+\s*(?:mt|mt\+c|kg|tn|ton)\+?c?)/i);
-        if (wMatch) {
-          weight = wMatch[1].toUpperCase().replace(/\s+/g, '');
-        } else {
-          weight = '';
-        }
+      //   if (/fy wee|weight|wt\b/i.test(line) && i < lines.length - 1) {
+      //     weight = lines[i + 1] || '';
+      //     const wMatch = weight.match(/(\d+\s*(?:mt|mt\+c|kg|tn|ton)\+?c?)/i);
+      //     if (wMatch) {
+      //       weight = wMatch[1].toUpperCase().replace(/\s+/g, '');
+      //     } else {
+      //       weight = '';
+      //     }
+      //   }
+      // }
+      // ─── Weight: OCR garbles "WEIGHT" as "fy wee"/"fy wae", etc. ───
+      if (/fy\s*w[ae]+|weight|wt\b/i.test(line) && i < lines.length - 1) {
+        weight = this.extractWeightValue(lines[i + 1] || '');
       }
     }
 
@@ -522,6 +623,7 @@ export class OcrService {
           .filter(Boolean);
 
         let city = (parts[1] || '').replace(/\d{6}/g, '').trim();
+        city = city.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '');
 
         // ─── FIX 2: no-comma DROP lines like
         //   "DROP Solar square energy Mangalore Karnataka 574144"

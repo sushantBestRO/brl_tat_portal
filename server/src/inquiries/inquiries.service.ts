@@ -25,6 +25,16 @@ export class InquiriesService {
     private parser: ParserService,
   ) {}
 
+  // ─── Group filter: the portal shows only the active WhatsApp group's
+  // data. Returns '' when no group is configured (= show all groups). ───
+  private activeGroupKey(): string {
+    return (
+      this.config.SETTINGS?.['group_key'] ||
+      this.config.CONFIG?.groups?.[0]?.group_key ||
+      ''
+    );
+  }
+
   // ─── Serialize inquiry for API response ───
   private serialize(inq: Inquiry): any {
     const end = inq.quotedAt || new Date();
@@ -281,6 +291,11 @@ export class InquiriesService {
         (inq.quotedAt.getTime() - new Date(inq.postedAt).getTime()) / 1000;
     }
 
+    // ─── CHANGE-RATE FIX: wrong rate stays visible as "previous" ───
+    if (wasAlreadyQuoted && oldRate) {
+      inq.previousRates = oldRate;
+    }
+
     inq.quotedRates = rates;
     inq.matchBasis = wasAlreadyQuoted ? 'manual_correction' : 'manual';
 
@@ -298,7 +313,109 @@ export class InquiriesService {
       }),
     );
 
+    // ─── CHANGE-RATE NEW: requester saw the WRONG rate on WhatsApp —
+    // send the corrected one too (same auto-send flag as pricer flow) ───
+    if (wasAlreadyQuoted && this.config.autoWhatsAppEnabled) {
+      try {
+        const rateMsg =
+          `✅ Rate Correction\n\n` +
+          `Lane: ${inq.lane}\n` +
+          `Corrected Rate: ₹${rates}\n` +
+          `Quoted by: ${inq.quotedByName}`;
+        const sent = await this.notify.sendWhatsapp(
+          inq.requesterKey || '',
+          rateMsg,
+        );
+        await this.eventRepo.save(
+          this.eventRepo.create({
+            inquiryId: id,
+            kind: sent ? 'RATE_WA' : 'SYSTEM',
+            actor: quotedBy,
+            channel: 'whatsapp',
+            detail: sent
+              ? 'Corrected rate sent to requester on WhatsApp'
+              : 'Corrected rate WhatsApp send failed',
+          }),
+        );
+      } catch {
+        // a notification failure must never block the correction itself
+      }
+    }
+
     return { updated: true, wasAlreadyQuoted, oldRate, newRate: rates };
+  }
+
+  async removeQuote(id: number, reason = '', by = 'coordinator'): Promise<any> {
+    const inq = await this.inquiryRepo.findOne({ where: { id } });
+    if (!inq) throw new NotFoundException('inquiry not found');
+    if (!inq.quotedRates && inq.status !== 'QUOTED') {
+      throw new BadRequestException(
+        'This inquiry has no quoted rate to remove',
+      );
+    }
+
+    const removedRate = inq.quotedRates;
+
+    inq.quotedRates = '';
+    inq.quotedAt = null as any;
+    inq.previousRates = '';
+    inq.matchBasis = '';
+    inq.tatSeconds = null as any;
+    inq.status = 'OPEN';
+
+    await this.inquiryRepo.save(inq);
+
+    await this.eventRepo.save(
+      this.eventRepo.create({
+        inquiryId: id,
+        kind: 'RATE_REMOVED',
+        actor: by,
+        channel: 'dashboard',
+        detail: `Rate removed (was: ₹${removedRate || 'n/a'}). Reason: ${reason || 'not specified'}`,
+      }),
+    );
+
+    return { removed: true, id, removedRate };
+  }
+
+  // ─── Manual status change (coordinator override — e.g. fixing inquiries
+  // wrongly set to WITHDRAWN by the old group-switch bug) ───
+  async changeStatus(
+    id: number,
+    status: string,
+    by = 'coordinator',
+  ): Promise<any> {
+    const allowed = [
+      'OPEN',
+      'QUOTED',
+      'CLOSED_WON',
+      'CLOSED_LOST',
+      'WITHDRAWN',
+    ];
+    if (!allowed.includes(status)) {
+      throw new BadRequestException(
+        `status must be one of: ${allowed.join(', ')}`,
+      );
+    }
+    const inq = await this.inquiryRepo.findOne({ where: { id } });
+    if (!inq) throw new NotFoundException('inquiry not found');
+
+    const oldStatus = inq.status;
+    inq.status = status;
+    await this.inquiryRepo.save(inq);
+
+    await this.eventRepo.save(
+      this.eventRepo.create({
+        inquiryId: id,
+        at: new Date(),
+        kind: 'STATUS_CHANGE',
+        actor: by,
+        channel: 'dashboard',
+        detail: `${oldStatus} -> ${status} (manual override)`,
+      }),
+    );
+
+    return { id, old: oldStatus, new: status };
   }
 
   // ─── Log a coordinator call outcome ───

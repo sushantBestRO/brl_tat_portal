@@ -751,6 +751,8 @@ export default function Inquiries() {
   const [showCloseModal, setShowCloseModal] = useState(false);
   const [closeTarget, setCloseTarget] = useState(null);
   const [showBroadcastModal, setShowBroadcastModal] = useState(false);
+  const [showRemoveRateModal, setShowRemoveRateModal] = useState(false);
+
   const [broadcastTarget, setBroadcastTarget] = useState(null);
 
   const [showKebab, setShowKebab] = useState(null);
@@ -759,6 +761,8 @@ export default function Inquiries() {
 
   const [closeChoice, setCloseChoice] = useState(""); // 'won' | 'lost' | 'withdrawn'
   const [closeNote, setCloseNote] = useState("");
+
+  const [manualStatus, setManualStatus] = useState("");
 
   const showToast = (message, type = "success") => {
     setToast({ message, type });
@@ -839,9 +843,16 @@ export default function Inquiries() {
     try {
       let endpoint = "";
       switch (action) {
+        case "status":
+          endpoint = `/inquiries/${id}/status`;
+          break;
         case "quote":
           endpoint = `/inquiries/${id}/quote`;
           break;
+        case "unquote":
+          endpoint = `/inquiries/${id}/remove-quote`;
+          break;
+
         case "call":
           endpoint = `/inquiries/${id}/call`;
           break;
@@ -1416,8 +1427,20 @@ export default function Inquiries() {
                       setShowQuoteModal(true);
                     }}
                   >
-                    Quote Rate
+                    {detail.status === "QUOTED" && detail.quoted_rates
+                      ? "Change Rate"
+                      : "Quote Rate"}
                   </button>
+
+                  {detail.status === "QUOTED" && detail.quoted_rates && (
+                    <button
+                      className="small"
+                      style={{ color: "var(--danger)" }}
+                      onClick={() => setShowRemoveRateModal(true)}
+                    >
+                      Remove Rate
+                    </button>
+                  )}
 
                   {/* WhatsApp */}
                   <button
@@ -1555,6 +1578,36 @@ export default function Inquiries() {
                   >
                     Close Inquiry
                   </button>
+                  {/* ─── Manual status change (fix wrongly-set statuses) ─── */}
+                  <select
+                    value={manualStatus}
+                    onChange={(e) => setManualStatus(e.target.value)}
+                    style={{
+                      padding: "6px",
+                      borderRadius: "4px",
+                      border: "1px solid var(--border)",
+                    }}
+                  >
+                    <option value="">Set status…</option>
+                    <option value="OPEN">Open</option>
+                    <option value="QUOTED">Quoted</option>
+                    <option value="CLOSED_WON">Closed Won</option>
+                    <option value="CLOSED_LOST">Closed Lost</option>
+                    <option value="WITHDRAWN">Withdrawn</option>
+                  </select>
+                  {manualStatus && (
+                    <button
+                      className="small"
+                      onClick={() => {
+                        handleAction("status", detail.id, {
+                          status: manualStatus,
+                        });
+                        setManualStatus("");
+                      }}
+                    >
+                      Apply Status
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -1586,7 +1639,7 @@ export default function Inquiries() {
         />
       )} */}
       {/* Quote Modal */}
-      {showQuoteModal && quoteTarget && (
+      {/* {showQuoteModal && quoteTarget && (
         <Modal
           title={
             quoteTarget.status === "QUOTED"
@@ -1618,7 +1671,68 @@ export default function Inquiries() {
           }}
           onCancel={() => setShowQuoteModal(false)}
         />
+      )} */}
+
+      {/* Quote / Change Rate Modal */}
+      {showQuoteModal && quoteTarget && (
+        <Modal
+          title={
+            quoteTarget.status === "QUOTED"
+              ? `Update Rate — Inquiry #${quoteTarget.id}`
+              : `Enter Rate Quote — Inquiry #${quoteTarget.id}`
+          }
+          input={{
+            placeholder:
+              quoteTarget.status === "QUOTED"
+                ? `Current: ₹${quoteTarget.quoted_rates ?? "—"}`
+                : "₹60000",
+            defaultValue:
+              quoteTarget.status === "QUOTED"
+                ? String(quoteTarget.quoted_rates ?? "")
+                : "",
+            label:
+              quoteTarget.status === "QUOTED"
+                ? `Current rate: ₹${quoteTarget.quoted_rates ?? "—"} — enter the updated rate:`
+                : `Enter rate for #${quoteTarget.id}:`,
+          }}
+          confirmText={
+            quoteTarget.status === "QUOTED" ? "Update Rate" : "Quote"
+          }
+          cancelText="Cancel"
+          onConfirm={(rates) => {
+            setShowQuoteModal(false);
+            if (rates)
+              handleAction("quote", quoteTarget.id, {
+                rates,
+                quoted_by: "coordinator",
+                rate_changed: quoteTarget.status === "QUOTED",
+              });
+          }}
+          onCancel={() => setShowQuoteModal(false)}
+        />
       )}
+
+      {/* Remove Rate Modal */}
+      {showRemoveRateModal && detail && (
+        <Modal
+          title={`Remove Rate — Inquiry #${detail.id}`}
+          message={`Remove the quoted rate ₹${detail.quoted_rates ?? "—"}? The inquiry goes back to OPEN and rejoins the reminder flow. This is recorded in the event log.`}
+          input={{
+            placeholder: "e.g. wrong rate entered, pricer deleted the message",
+            label: "Reason for removing this rate:",
+          }}
+          confirmText="Remove Rate"
+          cancelText="Cancel"
+          danger
+          onConfirm={(reason) => {
+            setShowRemoveRateModal(false);
+            handleAction("unquote", detail.id, { reason });
+            showToast("✅ Rate removed — inquiry is back to OPEN", "success");
+          }}
+          onCancel={() => setShowRemoveRateModal(false)}
+        />
+      )}
+
       {/* Call Modal */}
       {showCallModal && callTarget && (
         <Modal

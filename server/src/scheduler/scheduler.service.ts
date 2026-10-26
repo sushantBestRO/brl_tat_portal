@@ -10,6 +10,7 @@ import { IngestService } from 'src/ingest/ingest.service';
 import { OcrService } from 'src/services/ocr.service';
 import { ParserService } from 'src/parser/parser.service';
 import { MatcherService } from 'src/matcher/matcher.service';
+import { AiParserService } from 'src/parser/ai-parser.service';
 
 @Injectable()
 export class SchedulerService implements OnModuleInit {
@@ -62,6 +63,7 @@ export class SchedulerService implements OnModuleInit {
     private ingest: IngestService,
     private ocrService: OcrService, // ← ADD THIS
     private parser: ParserService, // ← ADD THIS (check the exact class name)
+    private readonly aiParser: AiParserService,
     private readonly matcher: MatcherService,
   ) {}
 
@@ -115,14 +117,34 @@ export class SchedulerService implements OnModuleInit {
       if (inq.reminderCount >= maxReminders) continue;
 
       // Check if enough time passed since last reminder
-      const lastReminder = await this.eventRepo.findOne({
-        where: { inquiryId: inq.id, kind: 'REMINDER' },
-        order: { at: 'DESC' },
-      });
+      // Throttle on the last nudge of ANY kind. RED inquiries never create a
+      // 'REMINDER' event (the AMBER branch only runs below redMin), so the old
+      // check never applied to them and RED re-fired on every single tick.
+      // Check if enough time passed since last reminder
+      // const lastReminder = await this.eventRepo.findOne({
+      //   where: { inquiryId: inq.id, kind: 'REMINDER' },
+      //   order: { at: 'DESC' },
+      // });
 
-      if (lastReminder) {
+      // if (lastReminder) {
+      //   const sinceLast = Math.round(
+      //     (now.getTime() - new Date(lastReminder.at).getTime()) / 60000,
+      //   );
+      //   if (sinceLast < repeatMin) continue;
+      // }
+
+      const lastNudge = await this.eventRepo
+        .createQueryBuilder('e')
+        .where('e.inquiryId = :id', { id: inq.id })
+        .andWhere('e.kind IN (:...kinds)', {
+          kinds: ['REMINDER', 'ESCALATION'],
+        })
+        .orderBy('e.at', 'DESC')
+        .getOne();
+
+      if (lastNudge) {
         const sinceLast = Math.round(
-          (now.getTime() - new Date(lastReminder.at).getTime()) / 60000,
+          (now.getTime() - new Date(lastNudge.at).getTime()) / 60000,
         );
         if (sinceLast < repeatMin) continue;
       }
@@ -1164,6 +1186,47 @@ export class SchedulerService implements OnModuleInit {
       `[OCR Background] Starting OCR for image: ${imageUrl.slice(0, 80)}...`,
     );
 
+    // ─── AI VISION FIRST: reads screenshots far better than Tesseract.
+    // Falls back to the normal OCR flow if AI fails or is disabled. ───
+    // ─── AI VISION FIRST: reads screenshots far better than Tesseract.
+    // Falls back to the normal OCR flow if AI fails or is disabled. ───
+    if (this.aiParser.enabled && messageId) {
+      try {
+        const res = await this.aiParser.parseImage(imageUrl);
+
+        if (res.status === 'parsed' && res.data.confidence !== 'low') {
+          await this.updateInquiryFromOcr(
+            messageId,
+            {
+              lane: res.data.lane,
+              vehicleType: res.data.vehicleType,
+              spec: res.data.spec,
+              weights: res.data.weights,
+            },
+            `[AI Vision — confidence: ${res.data.confidence}]`,
+          );
+          return; // done — no Tesseract needed
+        }
+
+        if (res.status === 'unavailable') {
+          // Quota exhausted / circuit breaker open / image download failed —
+          // the AI never answered, so fall through to Tesseract and say so.
+          this.logger.warn(
+            `[OCR Background] AI vision UNAVAILABLE (${res.reason}) → Tesseract fallback`,
+          );
+        } else {
+          // AI ran but returned low confidence or not-an-inquiry
+          this.logger.log(
+            '[OCR Background] AI vision ran but low confidence / not an inquiry → Tesseract fallback',
+          );
+        }
+      } catch (err: any) {
+        this.logger.warn(
+          `[OCR Background] AI vision failed → Tesseract fallback: ${err.message}`,
+        );
+      }
+    }
+
     const ocrText = await this.ocrService.extractText(imageUrl);
     if (!ocrText) {
       this.logger.log(`[OCR Background] No text extracted from image`);
@@ -1505,9 +1568,18 @@ export class SchedulerService implements OnModuleInit {
     inq.reminderCount = (inq.reminderCount || 0) + 1;
     await this.inquiryRepo.save(inq);
 
-    this.logger.error(
-      `RED: Inquiry #${inq.id} is ${ageMin} min old. Escalation sent to ${coordName}.`,
-    );
+    // this.logger.error(
+    //   `RED: Inquiry #${inq.id} is ${ageMin} min old. Escalation sent to ${coordName}.`,
+    // );
+    if (emailSent) {
+      this.logger.error(
+        `RED: Inquiry #${inq.id} is ${ageMin} min old. Escalation emailed to ${coordName}.`,
+      );
+    } else {
+      this.logger.warn(
+        `RED: Inquiry #${inq.id} is ${ageMin} min old. Email NOT sent (SMTP not configured) — logged only.`,
+      );
+    }
   }
 
   //   // ─── Send WhatsApp message (via configured provider) ───

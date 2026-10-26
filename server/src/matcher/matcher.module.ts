@@ -5,6 +5,7 @@ import { MatcherService } from './matcher.service';
 import { ParserModule } from '../parser/parser.module';
 import { AppConfigModule } from '../config/app-config.module';
 import { NotifyModule } from 'src/notify/notify.module';
+import { AiParserService } from 'src/parser/ai-parser.service';
 
 @Module({
   imports: [
@@ -13,7 +14,7 @@ import { NotifyModule } from 'src/notify/notify.module';
     AppConfigModule,
     NotifyModule,
   ],
-  providers: [MatcherService],
+  providers: [MatcherService, AiParserService],
   exports: [MatcherService],
 })
 export class MatcherModule {}

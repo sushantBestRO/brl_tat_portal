@@ -70,12 +70,29 @@ export class InquiriesController {
     return this.svc.findOne(+id);
   }
 
+  // ─── Manual status change (coordinator override) ───
+  @Post('inquiries/:id/status')
+  changeStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { status: string },
+  ) {
+    return this.svc.changeStatus(id, body.status);
+  }
+
   @Post('inquiries/:id/quote')
   manualQuote(
     @Param('id') id: string,
     @Body() body: { rates: string; quoted_by?: string; note?: string },
   ) {
     return this.svc.manualQuote(+id, body.rates, body.quoted_by, body.note);
+  }
+
+  @Post('inquiries/:id/remove-quote')
+  removeQuote(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { reason?: string },
+  ) {
+    return this.svc.removeQuote(id, body.reason, 'coordinator'); // ← removeQuote
   }
 
   @Post('inquiries/:id/call')

@@ -9,6 +9,7 @@ import { OtpChallenge } from '../entities/otp-challenge.entity';
 import { NotifyService } from '../notify/notify.service';
 import { BadRequestException } from '@nestjs/common';
 import * as crypto from 'crypto';
+import { Throttle } from '@nestjs/throttler';
 
 @Controller('admin')
 export class AdminController {
@@ -79,6 +80,7 @@ export class AdminController {
 
   // ─── Hard Delete Step 1: Request OTP ───
   // Emails a 6-digit code to a fixed address. Never returns the code.
+  @Throttle({ default: { limit: 3, ttl: 600000 } })
   @Post('hard-delete/request-otp')
   async requestOtp() {
     // Invalidate any earlier unused codes
@@ -125,6 +127,7 @@ export class AdminController {
   // Only if the code matches, is unused, and hasn't expired,
   // permanently delete every message, inquiry, and event.
   @Post('hard-delete/confirm')
+  @Throttle({ default: { limit: 5, ttl: 600000 } })
   async confirmHardDelete(@Body() body: { otp: string }) {
     const challenge = await this.otpRepo.findOne({
       where: {

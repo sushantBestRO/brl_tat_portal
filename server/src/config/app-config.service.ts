@@ -43,6 +43,7 @@ export class AppConfigService implements OnModuleInit {
     'smtp_pass',
     'automsg_pass',
     'maytapi_api_key',
+    'gemini_api_key',
   ]);
 
   constructor(
@@ -169,11 +170,6 @@ export class AppConfigService implements OnModuleInit {
     for (const [key, envName] of Object.entries(envFallback)) {
       this.SETTINGS[key] = this.envConfig.get<string>(envName) || '';
     }
-
-    // TEMPORARY: Hardcode Maytapi credentials to test
-    // this.SETTINGS['maytapi_api_key'] = '5379b494-917d-495e-9b23-ec618f25f4e5';
-    // this.SETTINGS['maytapi_product_id'] = 'a9bf09cb-acd0-41c0-9748-3b79edb43542';
-    // this.SETTINGS['maytapi_phone_id'] = '136151';
 
     // Override with anything saved in the database (from Settings page)
     const rows = await this.settingRepo.find();

@@ -889,6 +889,7 @@ import { useState, useEffect } from "react";
 import api from "../api";
 // import ImportHistoryModal from "../components/ImportHistoryModal";
 import TeamMemberModal from "../components/TeamMemberModal";
+import CallLogs from "../components/CallLogs";
 
 export default function Settings() {
   const [tab, setTab] = useState("team");
@@ -1144,6 +1145,14 @@ export default function Settings() {
           style={{ borderRadius: "0", borderBottom: "none" }}
         >
           Inquiry History
+        </button>
+
+        <button
+          className={tab === "logs" ? "primary" : "secondary"}
+          onClick={() => setTab("logs")}
+          style={{ borderRadius: "0", borderBottom: "none" }}
+        >
+          Call Logs
         </button>
       </div>
 
@@ -1788,6 +1797,131 @@ export default function Settings() {
                 button.
               </span>
             </div>
+            {/* ─── Runo Click-to-Call ─── */}
+            <div
+              style={{
+                padding: "16px",
+                background: "var(--light-gray)",
+                borderRadius: "8px",
+              }}
+            >
+              <h3
+                style={{
+                  fontSize: "14px",
+                  fontWeight: "600",
+                  marginBottom: "12px",
+                }}
+              >
+                📞 Runo Click-to-Call
+              </h3>
+
+              {/* ── 1. API key + its own save ── */}
+              <div style={{ marginBottom: "16px" }}>
+                <label
+                  style={{
+                    display: "block",
+                    marginBottom: "6px",
+                    fontSize: "12px",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  Runo API Key (Auth-Key){" "}
+                  {config.runo_api_key_is_set && (
+                    <span style={{ color: "var(--success)" }}>(set)</span>
+                  )}
+                </label>
+                <div
+                  className="row"
+                  style={{ gap: "8px", alignItems: "center" }}
+                >
+                  <div style={{ flex: 1 }}>
+                    <input
+                      type="password"
+                      placeholder="Leave blank to keep existing"
+                      onChange={(e) =>
+                        setConfig({ ...config, runo_api_key: e.target.value })
+                      }
+                    />
+                  </div>
+                  <button
+                    className="primary"
+                    onClick={async () => {
+                      if (!config.runo_api_key) {
+                        alert("Enter the Runo API key first");
+                        return;
+                      }
+                      try {
+                        await api.post("/settings/config", {
+                          runo_api_key: config.runo_api_key,
+                        });
+                        alert("✅ Runo API key saved!");
+                        setConfig({ ...config, runo_api_key: "" });
+                        fetchAll();
+                      } catch (err) {
+                        alert("Failed to save Runo API key");
+                      }
+                    }}
+                  >
+                    Save API Key
+                  </button>
+                </div>
+              </div>
+
+              {/* ── 2. Calling number + its own save ── */}
+              <div>
+                <label
+                  style={{
+                    display: "block",
+                    marginBottom: "6px",
+                    fontSize: "12px",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  Calling Number — your phone rings first
+                </label>
+                <div
+                  className="row"
+                  style={{ gap: "8px", alignItems: "center" }}
+                >
+                  <div style={{ flex: 1 }}>
+                    <input
+                      value={config.caller_phone || ""}
+                      onChange={(e) =>
+                        setConfig({ ...config, caller_phone: e.target.value })
+                      }
+                      placeholder="+919594964196"
+                    />
+                  </div>
+                  <button
+                    className="primary"
+                    onClick={async () => {
+                      try {
+                        await api.post("/settings/config", {
+                          caller_phone: config.caller_phone || "",
+                        });
+                        alert("✅ Calling number saved!");
+                        fetchAll();
+                      } catch (err) {
+                        alert("Failed to save calling number");
+                      }
+                    }}
+                  >
+                    Save Number
+                  </button>
+                </div>
+              </div>
+
+              <p
+                style={{
+                  fontSize: "11px",
+                  color: "var(--text-muted)",
+                  marginTop: "10px",
+                }}
+              >
+                Used by the 📞 Call button on inquiries — this number rings
+                first, then the customer is connected.
+              </p>
+            </div>
 
             <button
               className="primary"
@@ -2113,6 +2247,22 @@ export default function Settings() {
               <ImportHistoryModal onClose={() => setShowImport(false)} />
             )}
           </div> */}
+        </div>
+      )}
+
+      {/* ─── Call Log Tab ─── */}
+      {tab === "logs" && (
+        <div className="card" style={{ padding: "20px" }}>
+          <h2
+            style={{
+              fontSize: "16px",
+              fontWeight: "600",
+              marginBottom: "16px",
+            }}
+          >
+            📞 Call Logs
+          </h2>
+          <CallLogs showToast={(msg) => alert(msg)} />
         </div>
       )}
     </div>
